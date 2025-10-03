@@ -1,0 +1,5 @@
+streamlit
+pandas
+py3Dmol
+biopython
+numpy
