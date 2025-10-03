@@ -3,3 +3,4 @@ pandas
 py3Dmol
 biopython
 numpy
+matplotlib
