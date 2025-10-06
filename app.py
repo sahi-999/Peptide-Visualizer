@@ -104,7 +104,7 @@ def render_synced_viewers(pdb_str, residue_vals1, residue_vals2, bg_color, title
     # Customize the HTML to add space between viewers
     html = view._make_html()
     html = html.replace('<div class="viewer_3Dmoljs" style="',
-                        '<div class="viewer_3Dmoljs" style="width: 48%; float: left; margin-right: 4%;')
+                        '<div class="viewer_3Dmoljs" style="width: 50%; float: left; margin-right: 6%;')
     html = html.replace('</div><div class="viewer_3Dmoljs" style="',
                         '</div><div style="clear: both;"></div><div class="viewer_3Dmoljs" style="width: 48%; float: left; margin-right: 0;')
     
