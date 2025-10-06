@@ -170,7 +170,40 @@ def create_download_zip(protein_of_interest, pdb_str, peptide_data, residue_data
     return zip_buffer
 
 # Streamlit App
-st.title("Peptide3D Mapper")
+html_content = """
+<div style="position: relative; width: 100%; overflow: hidden; background-color: #1a1a2e; padding: 20px 0;">
+    <h1 id="animated-title" style="font-family: 'Arial', sans-serif; font-size: 48px; color: #e94560; margin: 0; text-align: center; 
+           background: linear-gradient(to right, #e94560, #ffffff); -webkit-background-clip: text; -webkit-text-fill-color: transparent; 
+           animation: paintSlide 2s ease-out forwards;">
+        Peptide3D Mapper
+    </h1>
+    <style>
+        @keyframes paintSlide {
+            0% { transform: translateX(-100%); opacity: 0; }
+            50% { transform: translateX(0); opacity: 1; }
+            100% { transform: translateX(0); opacity: 1; }
+        }
+        #animated-title {
+            position: relative;
+            display: inline-block;
+        }
+        #animated-title::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            background: linear-gradient(to right, #00d4ff, #e94560, #ffffff);
+            animation: paintEffect 2s ease-out forwards;
+            z-index: -1;
+        }
+        @keyframes paintEffect {
+            0% { width: 0; }
+            100% { width: 100%; }
+        }
+    </style>
+</div>
+"""
+st.components.v1.html(html_content, height=100)
 st.markdown(
     """
     <p style='text-align: justify; font-size: 16px; color: #4a4a4a;'>
