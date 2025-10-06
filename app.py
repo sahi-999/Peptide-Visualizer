@@ -101,8 +101,15 @@ def render_synced_viewers(pdb_str, residue_vals1, residue_vals2, bg_color, title
     view.zoomTo(viewer=(0,0))
     view.zoomTo(viewer=(0,1))
     
+    # Customize the HTML to add space between viewers
+    html = view._make_html()
+    html = html.replace('<div class="viewer_3Dmoljs" style="',
+                        '<div class="viewer_3Dmoljs" style="width: 48%; float: left; margin-right: 4%;')
+    html = html.replace('</div><div class="viewer_3Dmoljs" style="',
+                        '</div><div style="clear: both;"></div><div class="viewer_3Dmoljs" style="width: 48%; float: left; margin-right: 0;')
+    
     st.markdown(f"#### {title1} (Left) | {title2} (Right)")
-    st.components.v1.html(view._make_html(), height=400)
+    st.components.v1.html(html, height=400)
 
 def render_linear_plot(residue_vals, title, seq_len, vmin, vmax, cmap_name='autumn', not_mapped_color='#d3d3d3'):
     fig_width = min(50, max(20, seq_len * 0.15))
