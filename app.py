@@ -77,16 +77,31 @@ def generate_colormap(residue_vals, cmap_name='autumn', not_mapped_color='#d3d3d
             hex_colors.append(mcolors.rgb2hex(rgb))
     return hex_colors, vmin, vmax
 
-def render_viewer(pdb_str, residue_vals, bg_color, title, cmap_name='autumn', not_mapped_color='#d3d3d3'):
-    hex_colors, vmin, vmax = generate_colormap(residue_vals, cmap_name, not_mapped_color)
-    view = py3Dmol.view(width="95vw", height="400px")
-    view.addModel(pdb_str, 'pdb')
-    view.setBackgroundColor(bg_color)
-    view.setStyle({}, {'cartoon': {'color': 'lightgray'}})
-    for i, c in enumerate(hex_colors):
-        view.setStyle({'resi': str(i+1)}, {'cartoon': {'color': c}})
-    view.zoomTo()
-    st.markdown(f"#### {title}")
+def render_synced_viewers(pdb_str, residue_vals1, residue_vals2, bg_color, title1, title2, cmap_name='autumn', not_mapped_color='#d3d3d3'):
+    hex_colors1, vmin1, vmax1 = generate_colormap(residue_vals1, cmap_name, not_mapped_color)
+    hex_colors2, vmin2, vmax2 = generate_colormap(residue_vals2, cmap_name, not_mapped_color)
+    
+    view = py3Dmol.view(width='95vw', height='400px', viewergrid=(1,2), linked=True)
+    
+    view.addModel(pdb_str, 'pdb', viewer=(0,0))
+    view.addModel(pdb_str, 'pdb', viewer=(0,1))
+    
+    view.setBackgroundColor(bg_color, viewer=(0,0))
+    view.setBackgroundColor(bg_color, viewer=(0,1))
+    
+    view.setStyle({}, {'cartoon': {'color': 'lightgray'}}, viewer=(0,0))
+    view.setStyle({}, {'cartoon': {'color': 'lightgray'}}, viewer=(0,1))
+    
+    for i, c in enumerate(hex_colors1):
+        view.setStyle({'resi': str(i+1)}, {'cartoon': {'color': c}}, viewer=(0,0))
+    
+    for i, c in enumerate(hex_colors2):
+        view.setStyle({'resi': str(i+1)}, {'cartoon': {'color': c}}, viewer=(0,1))
+    
+    view.zoomTo(viewer=(0,0))
+    view.zoomTo(viewer=(0,1))
+    
+    st.markdown(f"#### {title1} (Left) | {title2} (Right)")
     st.components.v1.html(view._make_html(), height=400)
 
 def render_linear_plot(residue_vals, title, seq_len, vmin, vmax, cmap_name='autumn', not_mapped_color='#d3d3d3'):
@@ -170,46 +185,13 @@ def create_download_zip(protein_of_interest, pdb_str, peptide_data, residue_data
     return zip_buffer
 
 # Streamlit App
-# Streamlit App
-html_content = """
-<div style="position: relative; width: 100%; overflow: hidden; background-color: #1a1a2e; padding: 20px 0;">
-    <h1 id="animated-title" style="font-family: 'Arial', sans-serif; font-size: 48px; color: #e94560; margin: 0; text-align: center; 
-           background: linear-gradient(to right, #e94560, #ffffff); -webkit-background-clip: text; -webkit-text-fill-color: transparent; 
-           position: relative; z-index: 1;">
-        Peptide3D Mapper
-    </h1>
-    <div id="paint-overlay" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: linear-gradient(to right, #00d4ff, #e94560, #ffffff); 
-           z-index: 0; animation: paintEffect 2s ease-out forwards;">
-    </div>
-    <style>
-        @keyframes paintEffect {
-            0% { width: 0; }
-            100% { width: 100%; opacity: 0; }
-        }
-        #animated-title {
-            display: inline-block;
-        }
-        #paint-overlay {
-            animation-fill-mode: forwards;
-        }
-    </style>
-    <script>
-        document.addEventListener("DOMContentLoaded", function() {
-            setTimeout(() => {
-                document.getElementById("paint-overlay").style.display = "none";
-            }, 2000);
-        });
-    </script>
-</div>
-"""
-st.components.v1.html(html_content, height=100)
-
+st.title("Peptide3D Mapper")
 st.markdown(
     """
     <p style='text-align: justify; font-size: 16px; color: #4a4a4a;'>
-    The **Peptide3D Mapper** is a web-based tool that visualizes peptide intensity data from proteomics experiments on AlphaFold 3D protein structures.
-    Upload peptide CSV and FASTA files to compare conditions (e.g., control vs. disease) using z-score intensity scales.
-    Explore residue-level differences in interactive 3D and linear sequence views, with customizable colors and exportable outputs.
+   The **Peptide3D Mapper** is a web-based tool that visualizes peptide intensity data from proteomics experiments on AlphaFold 3D protein structures.
+   Upload peptide CSV and FASTA files to compare conditions (e.g., control vs. disease) using z-score intensity scales.
+   Explore residue-level differences in interactive 3D and linear sequence views, with customizable colors and exportable outputs.
     </p>
     """,
     unsafe_allow_html=True
@@ -318,11 +300,7 @@ if csv_file and fasta_file:
                 selected_not_mapped_color = st.color_picker("Select Not Mapped Color", "#d3d3d3")
                 with st.container():
                     st.subheader("3D Structure Visualizations")
-                    col1, col2 = st.columns(2, gap="small")
-                    with col1:
-                        render_viewer(pdb_str, residue_data[condition1_name], bg_color, condition1_name, selected_cmap, selected_not_mapped_color)
-                    with col2:
-                        render_viewer(pdb_str, residue_data[condition2_name], bg_color, condition2_name, selected_cmap, selected_not_mapped_color)
+                    render_synced_viewers(pdb_str, residue_data[condition1_name], residue_data[condition2_name], bg_color, condition1_name, condition2_name, selected_cmap, selected_not_mapped_color)
                     st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
                     st.subheader("Linear Sequence Visualizations")
                     st.markdown(f"#### {condition1_name}")
