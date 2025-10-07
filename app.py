@@ -13,6 +13,7 @@ import zipfile
 import matplotlib.colors as mcolors
 import matplotlib.patches as patches
 import base64
+import json
 
 # Set wide layout at the top
 st.set_page_config(layout="wide", page_title="Peptide3D Mapper")
@@ -261,12 +262,32 @@ if csv_file and fasta_file:
                 protein_seq = None
                 for rec in seq_records:
                     parts = rec.id.split('|')
-                    if len(parts) > 1 and parts[1] == base_id:
-                        protein_seq = str(rec.seq)
-                        break
+                    uniprot_candidate = None
+    if len(parts) >= 2:
+        if parts[0] in ['sp', 'tr']:  # Swiss-Prot or Trembl prefix
+            uniprot_candidate = parts[1]
+        else:
+            uniprot_candidate = parts[0]  # Fallback to first part
+    if uniprot_candidate == base_id:
+        protein_seq = str(rec.seq)
+        break
+        if protein_seq is None:
+    # Fallback: Search by sequence similarity if exact ID match fails (optional, but useful)
+    st.warning(f"Exact ID match failed for {base_id}. Trying sequence search...")
+    best_match = None
+    best_score = 0
+    for rec in seq_records:
+        rec_seq = str(rec.seq)
+        # Simple exact match check (you could use BLAST for fuzzy matching if needed)
+        if rec_seq.startswith(protein_seq[:50]):  # Check first 50 AA
+            protein_seq = rec_seq
+            best_match = rec.id
+            break
                 if protein_seq is None:
                     st.error("Protein sequence not found in FASTA. Ensure IDs match (e.g., UniProt prefix).")
                     st.stop()
+                else: 
+                    st.info(f"Using sequence match from {best_match}.")
                 seq_len = len(protein_seq)
                 isoforms = df[df['Protein.Group'].str.contains(selected_protein + r'(?:-\d+)?$', regex=True)]['Protein.Group'].unique()
                 if len(isoforms) > 1 and combine_isoforms == "no":
@@ -292,9 +313,12 @@ if csv_file and fasta_file:
                     peptides = selected_df.groupby('Stripped.Sequence')[intensity_col].mean().reset_index()
                     peptide_data[condition] = peptides
                 pdb_url = f"https://alphafold.ebi.ac.uk/files/AF-{base_id}-F1-model_v5.pdb"
-                with st.spinner("Fetching AlphaFold structure..."):
-                    r = requests.get(pdb_url, timeout=10)
+                with st.spinner("Fetching AlphaFold structure for {base_id}..."):
+                    r = requests.get(pdb_url, timeout=15)
                     if r.status_code == 200:
+                        st.warning(f"v5 fetch failed ({r.status_code}). Trying v4 fallback...")
+        pdb_url = f"https://alphafold.ebi.ac.uk/files/AF-{base_id}-F1-model_v4.pdb"
+        r = requests.get(pdb_url, timeout=15)
                         pdb_str = r.text
                     else:
                         st.error(f"PDB fetch failed: {r.status_code}")
