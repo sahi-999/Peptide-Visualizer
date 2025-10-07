@@ -13,7 +13,6 @@ import zipfile
 import matplotlib.colors as mcolors
 import matplotlib.patches as patches
 import base64
-import json
 
 # Set wide layout at the top
 st.set_page_config(layout="wide", page_title="Peptide3D Mapper")
@@ -105,7 +104,7 @@ def render_synced_viewers(pdb_str, residue_vals1, residue_vals2, bg_color, title
     # Customize the HTML to add space between viewers
     html = view._make_html()
     html = html.replace('<div class="viewer_3Dmoljs" style="',
-                        '<div class="viewer_3Dmoljs" style="width: 50%; float: left; margin-right: 6%;')
+                        '<div class="viewer_3Dmoljs" style="width: 48%; float: left; margin-right: 4%;')
     html = html.replace('</div><div class="viewer_3Dmoljs" style="',
                         '</div><div style="clear: both;"></div><div class="viewer_3Dmoljs" style="width: 48%; float: left; margin-right: 0;')
     
@@ -258,37 +257,39 @@ if csv_file and fasta_file:
         if st.session_state.processed:
             with st.container():
                 st.info("🔄 Processing... (This may take a moment for PDB fetch.)")
-                base_id = selected_protein.split('-')[0]
+                base_id = selected_protein.split('-')[0]  # Keep your original extraction, but add fallback
                 protein_seq = None
                 for rec in seq_records:
+                    # More robust UniProt ID extraction from FASTA header
                     parts = rec.id.split('|')
                     uniprot_candidate = None
                     if len(parts) >= 2:
-                         if parts[0] in ['sp', 'tr']:  # Swiss-Prot or Trembl prefix
-                              uniprot_candidate = parts[1]
-                         else:
-                              uniprot_candidate = parts[0]  # Fallback to first part
-                     if uniprot_candidate == base_id:
-                          protein_seq = str(rec.seq)
-                          break
+                        if parts[0] in ['sp', 'tr']:  # Swiss-Prot or Trembl prefix
+                            uniprot_candidate = parts[1]
+                        else:
+                            uniprot_candidate = parts[0]  # Fallback to first part
+                    if uniprot_candidate == base_id:
+                        protein_seq = str(rec.seq)
+                        break
+
                 if protein_seq is None:
-                   # Fallback: Search by sequence similarity if exact ID match fails (optional, but useful)
-                   st.warning(f"Exact ID match failed for {base_id}. Trying sequence search...")
-                   best_match = None
-                   best_score = 0
-                   for rec in seq_records:
-                       rec_seq = str(rec.seq)
-             # Simple exact match check (you could use BLAST for fuzzy matching if needed)
-                      if rec_seq.startswith(protein_seq[:50]):  # Check first 50 AA
-                              protein_seq = rec_seq
-                              best_match = rec.id
-                              break
-                   if protein_seq is None:
-                          st.error("Protein sequence not found in FASTA. Ensure IDs match (e.g., UniProt prefix).")
-                          st.stop()
-                   else: 
-                          st.info(f"Using sequence match from {best_match}.")
-    seq_len = len(protein_seq)
+                    # Fallback: Search by sequence similarity if exact ID match fails (optional, but useful)
+                    st.warning(f"Exact ID match failed for {base_id}. Trying sequence search...")
+                    best_match = None
+                    best_score = 0
+                    for rec in seq_records:
+                        rec_seq = str(rec.seq)
+                        if rec_seq.startswith(protein_seq[:50]) if protein_seq else False:  # Check first 50 AA
+                            protein_seq = rec_seq
+                            best_match = rec.id
+                            break
+                    if protein_seq is None:
+                        st.error(f"Protein sequence not found for {base_id}. Check FASTA headers match UniProt format (e.g., sp|P00533|EGFR).")
+                        st.stop()
+                    else:
+                        st.info(f"Using sequence match from {best_match}.")
+
+                seq_len = len(protein_seq)
                 isoforms = df[df['Protein.Group'].str.contains(selected_protein + r'(?:-\d+)?$', regex=True)]['Protein.Group'].unique()
                 if len(isoforms) > 1 and combine_isoforms == "no":
                     selected_groups = st.multiselect("Select Isoforms", options=list(isoforms), default=list(isoforms))
@@ -313,16 +314,24 @@ if csv_file and fasta_file:
                     peptides = selected_df.groupby('Stripped.Sequence')[intensity_col].mean().reset_index()
                     peptide_data[condition] = peptides
                 pdb_url = f"https://alphafold.ebi.ac.uk/files/AF-{base_id}-F1-model_v5.pdb"
-                with st.spinner("Fetching AlphaFold structure for {base_id}..."):
-                    r = requests.get(pdb_url, timeout=15)
-                    if r.status_code == 200:
+                with st.spinner(f"Fetching AlphaFold structure for {base_id}..."):
+                    r = requests.get(pdb_url, timeout=15)  # Increased timeout
+                    if r.status_code != 200:
                         st.warning(f"v5 fetch failed ({r.status_code}). Trying v4 fallback...")
-        pdb_url = f"https://alphafold.ebi.ac.uk/files/AF-{base_id}-F1-model_v4.pdb"
-        r = requests.get(pdb_url, timeout=15)
-                        pdb_str = r.text
-                    else:
-                        st.error(f"PDB fetch failed: {r.status_code}")
+                        pdb_url = f"https://alphafold.ebi.ac.uk/files/AF-{base_id}-F1-model_v4.pdb"
+                        r = requests.get(pdb_url, timeout=15)
+                    if r.status_code != 200:
+                        # Optional: Check API for existence
+                        api_url = f"https://alphafold.ebi.ac.uk/api/prediction/{base_id}"
+                        api_r = requests.get(api_url, timeout=10)
+                        if api_r.status_code == 200:
+                            api_data = api_r.json()
+                            st.error(f"AlphaFold entry exists for {base_id}, but PDB download failed ({r.status_code}). Try manual download from https://alphafold.ebi.ac.uk/entry/{base_id}.")
+                        else:
+                            st.error(f"No AlphaFold prediction found for {base_id} ({api_r.status_code}). Search at https://alphafold.ebi.ac.uk/ to confirm.")
                         st.stop()
+                    pdb_str = r.text
+                st.success(f"Loaded structure for {base_id} ({len(pdb_str)} bytes).")
                 bg_color = st.selectbox("Background Color", ["white", "black", "darkgrey"], index=1)
                 # Add colormap and not-mapped color options
                 cmap_options = ['autumn', 'viridis', 'plasma', 'inferno', 'magma', 'cividis']
