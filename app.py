@@ -263,7 +263,7 @@ if csv_file and fasta_file:
                 for rec in seq_records:
                     parts = rec.id.split('|')
                     uniprot_candidate = None
-                     if len(parts) >= 2:
+                    if len(parts) >= 2:
                          if parts[0] in ['sp', 'tr']:  # Swiss-Prot or Trembl prefix
                               uniprot_candidate = parts[1]
                          else:
