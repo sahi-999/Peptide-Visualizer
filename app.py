@@ -5,6 +5,7 @@ from Bio import SeqIO
 import py3Dmol
 import io
 import requests
+import time
 from matplotlib import colormaps
 from matplotlib.colors import Normalize
 import matplotlib.pyplot as plt
@@ -13,6 +14,7 @@ import zipfile
 import matplotlib.colors as mcolors
 import matplotlib.patches as patches
 import base64
+import os
 
 # Set wide layout at the top
 st.set_page_config(layout="wide", page_title="Peptide3D Mapper")
@@ -256,30 +258,29 @@ if csv_file and fasta_file:
                 st.rerun()
         if st.session_state.processed:
             with st.container():
-                st.info("🔄 Processing... (This may take a moment for PDB fetch.)")
-                base_id = selected_protein.split('-')[0]  # Keep your original extraction, but add fallback
+                st.info("🔄 Processing... (This may take a moment for PDB fetch or upload.)")
+                base_id = selected_protein.split('-')[0]  # Keep your original extraction
                 protein_seq = None
                 for rec in seq_records:
                     # More robust UniProt ID extraction from FASTA header
                     parts = rec.id.split('|')
                     uniprot_candidate = None
                     if len(parts) >= 2:
-                        if parts[0] in ['sp', 'tr']:  # Swiss-Prot or Trembl prefix
+                        if parts[0] in ['sp', 'tr']:
                             uniprot_candidate = parts[1]
                         else:
-                            uniprot_candidate = parts[0]  # Fallback to first part
+                            uniprot_candidate = parts[0]
                     if uniprot_candidate == base_id:
                         protein_seq = str(rec.seq)
                         break
 
                 if protein_seq is None:
-                    # Fallback: Search by sequence similarity if exact ID match fails (optional, but useful)
+                    # Fallback: Search by sequence similarity if exact ID match fails
                     st.warning(f"Exact ID match failed for {base_id}. Trying sequence search...")
                     best_match = None
-                    best_score = 0
                     for rec in seq_records:
                         rec_seq = str(rec.seq)
-                        if rec_seq.startswith(protein_seq[:50]) if protein_seq else False:  # Check first 50 AA
+                        if rec_seq.startswith(protein_seq[:50]) if protein_seq else False:
                             protein_seq = rec_seq
                             best_match = rec.id
                             break
@@ -313,27 +314,37 @@ if csv_file and fasta_file:
                     min_max_logs[condition] = (min(covered), max(covered))
                     peptides = selected_df.groupby('Stripped.Sequence')[intensity_col].mean().reset_index()
                     peptide_data[condition] = peptides
-                pdb_url = f"https://alphafold.ebi.ac.uk/files/AF-{base_id}-F1-model_v5.pdb"
-                with st.spinner(f"Fetching AlphaFold structure for {base_id}..."):
-                    r = requests.get(pdb_url, timeout=15)  # Increased timeout
-                    if r.status_code != 200:
-                        st.warning(f"v5 fetch failed ({r.status_code}). Trying v4 fallback...")
-                        pdb_url = f"https://alphafold.ebi.ac.uk/files/AF-{base_id}-F1-model_v4.pdb"
-                        r = requests.get(pdb_url, timeout=15)
-                    if r.status_code != 200:
-                        # Optional: Check API for existence
-                        api_url = f"https://alphafold.ebi.ac.uk/api/prediction/{base_id}"
-                        api_r = requests.get(api_url, timeout=10)
-                        if api_r.status_code == 200:
-                            api_data = api_r.json()
-                            st.error(f"AlphaFold entry exists for {base_id}, but PDB download failed ({r.status_code}). Try manual download from https://alphafold.ebi.ac.uk/entry/{base_id}.")
-                        else:
-                            st.error(f"No AlphaFold prediction found for {base_id} ({api_r.status_code}). Search at https://alphafold.ebi.ac.uk/ to confirm.")
-                        st.stop()
-                    pdb_str = r.text
-                st.success(f"Loaded structure for {base_id} ({len(pdb_str)} bytes).")
+
+                # Add PDB file uploader
+                pdb_file = st.file_uploader("Upload AlphaFold PDB file", type=["pdb"], help="Manually downloaded PDB file for the selected protein.")
+                if pdb_file is not None:
+                    pdb_str = pdb_file.getvalue().decode("utf-8")
+                else:
+                    st.warning("No PDB file uploaded. Attempting to fetch from AlphaFold...")
+                    pdb_url = f"https://alphafold.ebi.ac.uk/files/AF-{base_id}-F1-model_v5.pdb"
+                    with st.spinner(f"Fetching AlphaFold structure for {base_id}..."):
+                        try:
+                            r = requests.get(pdb_url, timeout=30)
+                            if r.status_code == 200:
+                                pdb_str = r.text
+                            else:
+                                st.warning(f"v5 fetch failed ({r.status_code}). Trying v4 fallback...")
+                                pdb_url = f"https://alphafold.ebi.ac.uk/files/AF-{base_id}-F1-model_v4.pdb"
+                                r = requests.get(pdb_url, timeout=30)
+                                if r.status_code == 200:
+                                    pdb_str = r.text
+                                else:
+                                    st.error(f"PDB fetch failed for {base_id} after all attempts ({r.status_code}). Please upload a manual PDB file.")
+                                    st.stop()
+                        except requests.exceptions.ReadTimeout:
+                            st.error(f"Connection to AlphaFold server timed out for {base_id}. Please upload a manual PDB file.")
+                            st.stop()
+                        except requests.exceptions.RequestException as e:
+                            st.error(f"Failed to fetch PDB for {base_id}: {str(e)}. Please upload a manual PDB file.")
+                            st.stop()
+
+                st.success(f"Loaded structure for {base_id} ({len(pdb_str)} bytes) from {'uploaded file' if pdb_file else 'AlphaFold server'}.")
                 bg_color = st.selectbox("Background Color", ["white", "black", "darkgrey"], index=1)
-                # Add colormap and not-mapped color options
                 cmap_options = ['autumn', 'viridis', 'plasma', 'inferno', 'magma', 'cividis']
                 selected_cmap = st.selectbox("Select Color Gradient", cmap_options, index=0)
                 selected_not_mapped_color = st.color_picker("Select Not Mapped Color", "#d3d3d3")
