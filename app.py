@@ -291,7 +291,7 @@ if csv_file and fasta_file:
                     min_max_logs[condition] = (min(covered), max(covered))
                     peptides = selected_df.groupby('Stripped.Sequence')[intensity_col].mean().reset_index()
                     peptide_data[condition] = peptides
-                pdb_url = f"https://alphafold.ebi.ac.uk/files/AF-{base_id}-F1-model_v4.pdb"
+                pdb_url = f"https://alphafold.ebi.ac.uk/files/AF-{base_id}-F1-model_v5.pdb"
                 with st.spinner("Fetching AlphaFold structure..."):
                     r = requests.get(pdb_url, timeout=10)
                     if r.status_code == 200:
