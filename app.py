@@ -263,31 +263,31 @@ if csv_file and fasta_file:
                 for rec in seq_records:
                     parts = rec.id.split('|')
                     uniprot_candidate = None
-    if len(parts) >= 2:
-        if parts[0] in ['sp', 'tr']:  # Swiss-Prot or Trembl prefix
-            uniprot_candidate = parts[1]
-        else:
-            uniprot_candidate = parts[0]  # Fallback to first part
-    if uniprot_candidate == base_id:
-        protein_seq = str(rec.seq)
-        break
-        if protein_seq is None:
-           # Fallback: Search by sequence similarity if exact ID match fails (optional, but useful)
-           st.warning(f"Exact ID match failed for {base_id}. Trying sequence search...")
-           best_match = None
-           best_score = 0
-           for rec in seq_records:
-              rec_seq = str(rec.seq)
+                     if len(parts) >= 2:
+                         if parts[0] in ['sp', 'tr']:  # Swiss-Prot or Trembl prefix
+                              uniprot_candidate = parts[1]
+                         else:
+                              uniprot_candidate = parts[0]  # Fallback to first part
+                     if uniprot_candidate == base_id:
+                          protein_seq = str(rec.seq)
+                          break
+                if protein_seq is None:
+                   # Fallback: Search by sequence similarity if exact ID match fails (optional, but useful)
+                   st.warning(f"Exact ID match failed for {base_id}. Trying sequence search...")
+                   best_match = None
+                   best_score = 0
+                   for rec in seq_records:
+                       rec_seq = str(rec.seq)
              # Simple exact match check (you could use BLAST for fuzzy matching if needed)
-             if rec_seq.startswith(protein_seq[:50]):  # Check first 50 AA
-                protein_seq = rec_seq
-                best_match = rec.id
-                break
-      if protein_seq is None:
-                st.error("Protein sequence not found in FASTA. Ensure IDs match (e.g., UniProt prefix).")
-                st.stop()
-      else: 
-                st.info(f"Using sequence match from {best_match}.")
+                      if rec_seq.startswith(protein_seq[:50]):  # Check first 50 AA
+                              protein_seq = rec_seq
+                              best_match = rec.id
+                              break
+                   if protein_seq is None:
+                          st.error("Protein sequence not found in FASTA. Ensure IDs match (e.g., UniProt prefix).")
+                          st.stop()
+                   else: 
+                          st.info(f"Using sequence match from {best_match}.")
     seq_len = len(protein_seq)
                 isoforms = df[df['Protein.Group'].str.contains(selected_protein + r'(?:-\d+)?$', regex=True)]['Protein.Group'].unique()
                 if len(isoforms) > 1 and combine_isoforms == "no":
