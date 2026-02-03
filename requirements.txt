@@ -7,3 +7,6 @@ matplotlib
 requests
 regex
 plotly
+scipy
+scikit
+seaborn
