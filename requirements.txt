@@ -7,6 +7,6 @@ matplotlib
 requests
 regex
 plotly
-scipy
+scipy>=1.11.0
 scikit
 seaborn
