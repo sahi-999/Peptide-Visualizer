@@ -8,5 +8,5 @@ requests
 regex
 plotly
 scipy>=1.11.0
-scikit
+scikit-learn
 seaborn
