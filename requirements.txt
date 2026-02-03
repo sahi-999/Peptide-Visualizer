@@ -4,3 +4,6 @@ py3Dmol
 biopython
 numpy
 matplotlib
+requests
+regex
+plotly
