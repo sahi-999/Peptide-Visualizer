@@ -27,7 +27,7 @@ from typing import List,Optional,Tuple,Dict
 from streamlit import cache_data
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
-import plotly.express as px
+
 
 
 st.session_state.setdefault("main_tab", "Qualitative Analysis")      # default main tab
@@ -180,26 +180,48 @@ def compute_z_scores(intensities, is_frequency=False):
         log_int = np.log10(intensities + 1)
         m, s = np.mean(log_int), np.std(log_int)
         return np.zeros_like(log_int) if s == 0 else (log_int - m) / s
-def clean_and_find_mods(peptide):
+def clean_and_find_mods(mod_seq: str):
     """
-    Cleans a peptide sequence and finds UniMod modification positions and types.
-    Returns:
-        cleaned_seq: sequence without UniMod tags
-        mod_list: list of tuples (0-based position, unimod_type)
+    Robust parser for Modified.Sequence with UniMod tags.
+    Returns: cleaned_seq (str), mod_list [(abs_pos_0based, 'UniMod:xx'), ...]
+    Handles N-term mods correctly.
     """
-    mod_list = []
-    cleaned_seq = ""
-    index = -1  # Start at -1 to make position 0-based after first increment
-    pattern = re.compile(r"([A-Z])(\(UniMod:(\d+)\))?", re.IGNORECASE)
-    for match in pattern.finditer(peptide):
-        aa, mod, num = match.groups()
-        index += 1
-        cleaned_seq += aa
-        if num:
-            mod_list.append((index, num))  # 0-based position
-    #st.write(f"Parsed PTM: {peptide} -> Cleaned: {cleaned_seq}, Mods: {mod_list}")  # Debug
-    return cleaned_seq, mod_list
+    cleaned = []
+    mods = []
+    i = 0
+    pos = 0  # residue position (0-based)
+    n_term_mods = []  # collect before first AA
 
+    while i < len(mod_seq):
+        c = mod_seq[i]
+        if c.isalpha():
+            cleaned.append(c.upper())
+            pos += 1
+            i += 1
+        elif c == '(':
+            # Find closing )
+            j = mod_seq.find(')', i)
+            if j == -1:
+                i += 1
+                continue
+            tag = mod_seq[i+1:j]
+            if tag.startswith('UniMod:'):
+                um = tag
+                if pos > 0:
+                    mods.append((pos - 1, um))  # attach to previous AA
+                else:
+                    n_term_mods.append(um)  # N-term
+            i = j + 1
+        else:
+            i += 1
+
+    cleaned_seq = ''.join(cleaned)
+
+    # Map N-term mods to position 0 (common convention)
+    for um in n_term_mods:
+        mods.append((0, um))
+
+    return cleaned_seq, mods
 def map_peptides_to_residues(df, protein_seq, intensity_col, overlap_strategy='merge', ptm_col=None, apply_tryptic=False,proteotypic_only=False):
     seq_len = len(protein_seq)
     residue_vals = [None] * seq_len
@@ -233,7 +255,7 @@ def map_peptides_to_residues(df, protein_seq, intensity_col, overlap_strategy='m
                 for rel_pos, unismod in mods:
                     abs_pos = start + rel_pos
                     if 0 <= abs_pos < seq_len:
-                        key = f"UniMod:{unismod}"
+                        key = unismod
                         ptm_positions.setdefault(key, set()).add(abs_pos)
 
     # ------------------------------------------------------------------
@@ -293,7 +315,7 @@ def map_peptides_to_residues(df, protein_seq, intensity_col, overlap_strategy='m
                     for rel_pos, unismod in mods:
                         abs_pos = start + rel_pos
                         if 0 <= abs_pos < seq_len:
-                            key = f"UniMod:{unismod}"
+                            key =unismod
                             ptm_positions.setdefault(key, set()).add(abs_pos)
 
         if not valid_found:
@@ -2525,6 +2547,9 @@ with quant_multi_tab:
                                 selected_df, protein_seq, intensity_col, overlap_strategy,
                                 ptm_col=ptm_col_to_use, apply_tryptic=st.session_state.apply_tryptic
                             )
+                            #st.write("DEBUG: PTM dict from mapping:", ptms)
+                            #st.write("DEBUG PTM positions raw:", extract_ptm_positions)
+                            
                             residue_data[condition] = residues
                             # Build full PTM dict with config
                             ptm_data[condition] = {}
@@ -2841,7 +2866,8 @@ with quant_multi_tab:
                                         ptm_col=ptm_col_to_use,
                                         apply_tryptic=st.session_state.apply_tryptic
                                     )
-
+                                    #st.write("DEBUG: PTM dict from mapping:", ptms_temp)
+                                    #st.write("DEBUG: Example positions for UniMod:28:", ptms_temp.get('UniMod:28', set()))
                                     # Copy residues (only if intensity non-NaN for this condition)
                                     if not peptide_rows[intensity_col].isna().all():
                                         for i, val in enumerate(residues_temp):
@@ -3007,7 +3033,7 @@ with quant_multi_tab:
                                         apply_tryptic=st.session_state.apply_tryptic,
                                         proteotypic_only=st.session_state.proteotypic_only
                                     )
-
+                                    
                                     # Copy mapped residues only
                                     for i, v in enumerate(temp_residues):
                                         if v is not None:
