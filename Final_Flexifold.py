@@ -5703,11 +5703,14 @@ with quant_diff_tab:
                             except Exception:
                                 fillcolor_val = f"rgba(0,0,0,{opacity})"
 
-                            x_rect = [r['start'], r['end'], r['end'], r['start'], r['start']]
+                            # Ensure very short peptides are visible as horizontal rectangles
+                            length = r['end'] - r['start']
+                            pad = max(0.4, length * 0.05)
+                            x_rect = [r['start'] - pad, r['end'] + pad, r['end'] + pad, r['start'] - pad, r['start'] - pad]
                             y_rect = [
-                                r['y_value'] - 0.35, r['y_value'] - 0.35,
-                                r['y_value'] + 0.35, r['y_value'] + 0.35,
-                                r['y_value'] - 0.35
+                                r['y_value'] - 0.06, r['y_value'] - 0.06,
+                                r['y_value'] + 0.06, r['y_value'] + 0.06,
+                                r['y_value'] - 0.06
                             ]
 
                             hover_text = (
@@ -5731,7 +5734,7 @@ with quant_diff_tab:
                             ))
                             fig.add_trace(go.Scatter(
                                 x=[(r['start'] + r['end']) / 2], y=[r['y_value']],
-                                mode='markers', marker=dict(color='rgba(0,0,0,0)', size=1),
+                                mode='markers', marker=dict(color='rgba(0,0,0,0)', size=10),
                                 hovertemplate=hover_text,
                                 legendgroup=r['group'], showlegend=False
                             ))
