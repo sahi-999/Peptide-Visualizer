@@ -2057,7 +2057,7 @@ with main_tab[0]:
                                 unsafe_allow_html=True
                     )
                 # === 3D Viewer ===
-                st.subheader("3D Structure Visualization")
+                st.subheader("Structure Visualization")
                 render_single_3d_viewer(
                     pdb_str,
                     residue_vals,
@@ -2285,7 +2285,7 @@ with main_tab[1]:
                     "processed": True
                 }
                     # === 3D Viewer ===
-                st.subheader("3D Structure Visualization")
+                st.subheader("Structure Visualization")
                 render_single_3d_viewer(
                         pdb_str,
                         residue_vals,
@@ -2542,9 +2542,9 @@ with main_tab[1]:
                     st.session_state.seq_records = seq_records
                     st.session_state.step1_done = True 
 
-            with st.expander("Aggregation & Options", expanded=st.session_state.step1_done and not st.session_state.step2_done):
+            with st.expander("Data Preprocessing", expanded=st.session_state.step1_done and not st.session_state.step2_done):
                 if not st.session_state.step1_done:
-                    st.info("Upload files in the previous section to enable aggregation options.")
+                    st.info("Upload files in the previous section to enable preprocessing options.")
                 else:
                     df         = st.session_state.df.copy()
                     metadata   = st.session_state.metadata
@@ -2675,7 +2675,7 @@ with main_tab[1]:
                         st.session_state.step2_done    = True
                         st.rerun()
 
-            with st.expander("Select Conditions", expanded=st.session_state.step2_done and not st.session_state.step3_done):
+            with st.expander("Condition/Group selection", expanded=st.session_state.step2_done and not st.session_state.step3_done):
                 if not st.session_state.step2_done:
                     st.info("Complete the previous step to enable condition selection.")
                 else:
@@ -2711,7 +2711,7 @@ with main_tab[1]:
                         st.session_state.step3_done = True
                         st.rerun()
 
-            with st.expander(" Select Protein & Process", 
+            with st.expander(" Select Protein of Interest", 
                                 expanded=st.session_state.step3_done and not st.session_state.step4_done):
                     if not st.session_state.step3_done:
                         st.info("Complete Step 3 first.")
@@ -2884,9 +2884,7 @@ with main_tab[1]:
                         min_max_logs = {}
                         z_score_mapping = {}  # ← Store z-scores for single peptide view
                         ptm_col = 'Modified.Sequence' if st.session_state.ptm_enabled and has_ptm else None
-                        
-                       
-                            
+     
                         #displayed_ptms = [um for cond in ptm_data.values() for um in cond.keys() if cond[um]['selected']]
                         #if not displayed_ptms:
                             #st.warning("No PTMs will be displayed: either none selected or none detected in this protein.")
@@ -3127,7 +3125,7 @@ with main_tab[1]:
                             key=nmc_key,
                         )
                         st.session_state.not_mapped_color = st.session_state[nmc_key]                      
-            with st.expander("structural visualization", expanded=st.session_state.step4_done and not st.session_state.step5_done):
+            with st.expander("structure Mapping & visualization", expanded=st.session_state.step4_done and not st.session_state.step5_done):
                 if not st.session_state.step4_done:
                     st.info("Complete the previous step to enable structural visualization.")
                 elif st.session_state.base_id is None :
@@ -3576,7 +3574,7 @@ with main_tab[1]:
                         st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
 
                         # Colorbar
-                        st.subheader("Colorbar")
+                        st.subheader(" Z Score Colorbar")
                         overall_vmin = min(min_max_logs[cond][0] for cond in conditions)
                         overall_vmax = max(min_max_logs[cond][1] for cond in conditions)
                         cbar_fig, cbar_ax = plt.subplots(figsize=(8, 0.4))
@@ -3608,7 +3606,7 @@ with main_tab[1]:
                         st.session_state.step5_done = True
                         st.session_state.step6_done= True
 
-            with st.expander("Quantitative Analysis", expanded=st.session_state.step5_done and not st.session_state.step6_done):
+            with st.expander("Quantitative Data Analysis", expanded=st.session_state.step5_done and not st.session_state.step6_done):
                 if not st.session_state.step6_done:
                     st.info("Complete the previous step to enable quantitative analysis.")
                 else:
@@ -4335,7 +4333,7 @@ with quant_diff_tab:
                         st.session_state.diff_step1_done  = True
                         st.rerun()
                         
-        with st.expander("Analysis Options", expanded=st.session_state.diff_step1_done and not st.session_state.diff_step2_done):
+        with st.expander("Data Preprocessing", expanded=st.session_state.diff_step1_done and not st.session_state.diff_step2_done):
             if not st.session_state.diff_step1_done:
                 st.info("Complete Step 1 first.")
             else:
@@ -4462,7 +4460,7 @@ with quant_diff_tab:
                 if st.button("Confirm Analysis Options", use_container_width=True, key="diff_confirm_options"):
                     st.session_state.diff_step2_done = True
                     st.rerun()
-        with st.expander("🔬 Select Protein & Visualization Settings",expanded=st.session_state.diff_step2_done and not st.session_state.diff_step3_done):
+        with st.expander("Condition/Group Selection",expanded=st.session_state.diff_step2_done and not st.session_state.diff_step3_done):
             if not st.session_state.diff_step2_done:
                 st.info("Complete Step 2 first.")
             else:
@@ -4632,7 +4630,7 @@ with quant_diff_tab:
                     st.session_state.diff_processed          = False  
                     st.rerun()
 
-        with st.expander("🧬 Processing Results",expanded=st.session_state.get("diff_step3_done", False) and not st.session_state.get("diff_processed", False)):
+        with st.expander("Protein of Interest",expanded=st.session_state.get("diff_step3_done", False) and not st.session_state.get("diff_processed", False)):
             if not st.session_state.diff_step3_done:
                     st.info("Complete Step 3 first.")
             else:
@@ -4917,7 +4915,7 @@ with quant_diff_tab:
                             entry["label"]    = cfg["label"]
                             entry["selected"] = cfg["selected"]
                         
-        with st.expander("🧪 3D Sturctural Visualizations", expanded=st.session_state.diff_processed):
+        with st.expander("Sturcture Mapping & Visualization", expanded=st.session_state.diff_processed):
             if not st.session_state.diff_processed:
                 st.info("Complete Step 4 first.")
             else:
@@ -5347,7 +5345,7 @@ with quant_diff_tab:
                 st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
 
                 # Colorbar (adjusted label)
-                st.subheader("Colorbar")
+                st.subheader("Z Score Colorbar")
                 overall_vmin = min(min_max_logs[cond][0] for cond in conditions)
                 overall_vmax = max(min_max_logs[cond][1] for cond in conditions)
                 cbar_fig, cbar_ax = plt.subplots(figsize =(8,0.3), constrained_layout =True)
@@ -5371,7 +5369,7 @@ with quant_diff_tab:
                 </div>
                 """
                 st.components.v1.html(html_content, height=80) 
-        with st.expander("📈 Peptide Analysis Plots", expanded=True):            
+        with st.expander("Peptide Analysis Plots", expanded=True):            
                     # ─── Interactive Scatter Plot for selected protein ────────────────────────
                     st.subheader("Peptide Scatter Plot – Differential Comparison")
 
