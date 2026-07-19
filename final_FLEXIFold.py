@@ -1,0 +1,5617 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+from Bio import SeqIO
+import py3Dmol
+import io
+import requests
+from matplotlib import colormaps
+from matplotlib.colors import Normalize
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+import base64
+import matplotlib.colors as mcolors
+import plotly.express as px
+from matplotlib.cm import ScalarMappable
+import zipfile
+from streamlit.components.v1 import html
+import json
+from Bio.PDB import PDBParser
+import re
+import time
+import scipy.stats as stats
+import seaborn as sns
+from typing import Any, Dict, List, Optional, Tuple
+from functools import lru_cache
+import urllib3
+from bs4 import BeautifulSoup
+from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
+import plotly.graph_objects as go
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+st.set_page_config(page_title="FLEXIfold", page_icon="⚛️", layout="wide")
+
+DEFAULT_APP_STATE = {
+    "main_tab": "Qualitative Analysis",
+    "active_quant_tab": "single",
+    "processed_single": {"processed": False},
+    "processed_multi": {"processed": False},
+    "processed_diff": False,
+    "ptm_enabled": True,
+    "apply_tryptic": False,
+    "proteotypic_only": False,
+    "combine_isoforms": "yes",
+    "overlap_strategy": "none",
+    "selected_protein_global": None,
+    "global_protein_options": [],
+    "pdb_source": "AlphaFold",
+    "uploaded_pdb": None,
+    "ptm_configs": {},
+    "cmap": "autumn",
+    "bg_color": "black",
+    "conditions_confirmed": {'single': False, 'multiple': False},
+    "processed": {'single': False, 'multiple': False},
+    "selected_residue": None,
+    "all_unimods": [],
+    "selected_unimods": [],
+}
+for key, value in DEFAULT_APP_STATE.items():
+    st.session_state.setdefault(key, value)
+
+
+def render_sidebar():
+    with st.sidebar:
+        st.title("⚛️ FLEXIfold")
+        st.caption("Proteomics to 3D Structure Mapper")
+        st.divider()
+
+        st.subheader("Global Settings")
+        st.session_state.ptm_enabled = st.checkbox(
+            "Enable PTM Annotation",
+            value=st.session_state.ptm_enabled,
+            help="Show PTM annotations on the protein structure and sequence plots.",
+        )
+        st.session_state.apply_tryptic = st.checkbox(
+            "Apply Tryptic Rule (K/R)",
+            value=st.session_state.apply_tryptic,
+            help="Map peptides using tryptic cleavage rules.",
+        )
+        st.session_state.proteotypic_only = st.checkbox(
+            "Proteotypic Peptides Only",
+            value=st.session_state.proteotypic_only,
+            help="Filter for peptides that match expected proteotypic behavior.",
+        )
+
+        st.divider()
+        st.subheader("Peptide Mapping")
+        st.session_state.combine_isoforms = st.selectbox(
+            "Combine Isoforms?",
+            ["yes", "no"],
+            index=0 if st.session_state.combine_isoforms == "yes" else 1,
+            help="Combine isoforms with the same UniProt base ID when mapping peptides.",
+            key="global_combine_isoforms",
+        )
+        st.session_state.overlap_strategy = st.selectbox(
+            "Overlap Strategy",
+            ["none", "merge", "highest"],
+            index=["none", "merge", "highest"].index(st.session_state.overlap_strategy),
+            help="Choose how overlapping peptide intensities are merged.",
+            key="global_overlap_strategy",
+        )
+        st.caption("These mapping options apply across the current dataset and visualization tabs.")
+
+        if st.session_state.ptm_enabled:
+            st.divider()
+            st.subheader("PTM Annotation")
+            unimod_options = st.session_state.get("all_unimods", []) or []
+            if unimod_options:
+                st.session_state.selected_unimods = st.multiselect(
+                    "Select UniMod IDs to include",
+                    options=unimod_options,
+                    default=st.session_state.selected_unimods,
+                    key="global_selected_unimods",
+                    help="Pick the UniMod IDs you want annotated on the structure.",
+                )
+
+                if st.session_state.selected_unimods:
+                    for um in st.session_state.selected_unimods:
+                        if um not in st.session_state.ptm_configs:
+                            st.session_state.ptm_configs[um] = {
+                                "selected": True,
+                                "label": um,
+                                "color": "#3700FF",
+                            }
+                        st.session_state.ptm_configs[um]["color"] = st.color_picker(
+                            f"Color for {um}",
+                            value=st.session_state.ptm_configs[um]["color"],
+                            key=f"ptm_color_{um}",
+                        )
+                        st.session_state.ptm_configs[um]["label"] = st.text_input(
+                            f"Display label for {um}",
+                            value=st.session_state.ptm_configs[um]["label"],
+                            key=f"ptm_label_{um}",
+                        )
+            else:
+                st.info("No UniMod IDs detected yet. Upload peptide data to see PTM options.")
+
+        st.divider()
+        st.subheader("Structure Source")
+        st.session_state.pdb_source = st.radio(
+            "PDB Source",
+            ["AlphaFold", "Upload PDB"],
+            index=0 if st.session_state.pdb_source == "AlphaFold" else 1,
+        )
+        if st.session_state.pdb_source == "Upload PDB":
+            st.session_state.uploaded_pdb = st.file_uploader(
+                "Upload PDB File",
+                type=["pdb"],
+                help="Upload a PDB file matching the selected UniProt accession.",
+                key="global_pdb",
+            )
+
+        st.divider()
+        st.subheader("Appearance settings")
+        if "cmap" not in st.session_state:
+            st.session_state.cmap = "autumn"
+        if "bg_color" not in st.session_state:
+            st.session_state.bg_color = "black"
+        if "not_mapped_color" not in st.session_state:
+            st.session_state.not_mapped_color = "#d3d3d3"
+
+        cmap_options = ["autumn", "coolwarm", "viridis", "plasma", "inferno", "magma", "cividis"]
+        st.session_state.cmap = st.selectbox(
+            "Color Map",
+            cmap_options,
+            index=cmap_options.index(st.session_state.cmap) if st.session_state.cmap in cmap_options else 0,
+        )
+        st.session_state.bg_color = st.selectbox(
+            "3D Background",
+            ["black", "white"],
+            index=0 if st.session_state.bg_color == "black" else 1,
+        )
+        st.session_state.not_mapped_color = st.color_picker(
+            "Not Mapped Color",
+            value=st.session_state.not_mapped_color,
+        )
+        st.session_state.selected_cmap = st.session_state.cmap
+        st.caption("These settings apply across most 3D and linear visualizations.")
+
+
+render_sidebar()
+    
+from functools import lru_cache
+from typing import Optional, Dict, Any, List
+import urllib3
+import requests
+from bs4 import BeautifulSoup
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+ISOFORM_SUFFIXES = ["-1", "-2", "-3", "-4", "-5", "-6", "-7", "-8"]
+
+DISPROT_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Accept":          "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer":         "https://disprot.org/browse",
+    "Connection":      "keep-alive",
+}
+
+
+def _strip_isoform(uniprot_id: str) -> str:
+    return uniprot_id.split("-")[0]
+
+
+def _parse_disorder(raw) -> Optional[float]:
+    """
+    DisProt disorder_content is a RAW DECIMAL (0.0 to 1.0).
+    e.g. 0.0983 = 9.83%  →  multiply by 100
+    Also handles legacy % string format just in case.
+    """
+    if raw is None:
+        return None
+    try:
+        val = float(str(raw).replace("%", "").strip())
+        # ✅ If value is between 0 and 1, it's a decimal → convert to %
+        if 0.0 <= val <= 1.0:
+            return round(val * 100, 2)
+        # Already a percentage (0–100 range)
+        return round(val, 2)
+    except (ValueError, TypeError):
+        return None
+
+
+def _fetch_all_disprot_entries(timeout: int = 20) -> List[Dict]:
+    """
+    Fetch all DisProt entries in one call.
+    The /api/search endpoint returns ALL entries (3199+) regardless of query.
+    We cache this locally and filter in Python — much faster than per-protein calls.
+    """
+    url = (
+        "https://disprot.org/api/search"
+        "?format=json&release=current"
+        "&show_ambiguous=true&show_obsolete=false"
+    )
+    resp = requests.get(url, headers=DISPROT_HEADERS, timeout=timeout, verify=False)
+    resp.raise_for_status()
+    payload = resp.json()
+    return payload.get("data") or payload.get("results") or []
+
+
+# ✅ Cache the full database fetch — runs only ONCE per session
+_DISPROT_CACHE: Optional[List[Dict]] = None
+
+def _get_cached_disprot() -> List[Dict]:
+    global _DISPROT_CACHE
+    if _DISPROT_CACHE is None:
+        _DISPROT_CACHE = _fetch_all_disprot_entries()
+    return _DISPROT_CACHE
+
+
+def _find_in_disprot(uniprot_id: str) -> Optional[Dict]:
+    """
+    Search cached DisProt entries for a given UniProt accession.
+    Matches both base ID (P10636) and isoforms (P10636-2, P10636-8).
+    Returns the entry with the highest disorder_content if multiple isoforms match.
+    """
+    base_id = _strip_isoform(uniprot_id)
+    entries = _get_cached_disprot()
+
+    matches = [
+        e for e in entries
+        if _strip_isoform(str(e.get("acc", ""))) == base_id
+    ]
+
+    if not matches:
+        return None
+
+    # Return the isoform with highest disorder content
+    def disorder_val(e):
+        raw = e.get("disorder_content")
+        return _parse_disorder(raw) or 0.0
+
+    return max(matches, key=disorder_val)
+
+
+def _fetch_uniprot_disorder(uniprot_id: str) -> Optional[Dict[str, Any]]:
+    """Fallback: estimate disorder % from UniProt region annotations."""
+    base_id = _strip_isoform(uniprot_id)
+    url = f"https://rest.uniprot.org/uniprotkb/{base_id}.json"
+    try:
+        resp = requests.get(url, timeout=10, verify=False)
+        if resp.status_code != 200:
+            return None
+        data            = resp.json()
+        sequence_length = data.get("sequence", {}).get("length", 0)
+        protein_name    = (
+            data.get("proteinDescription", {})
+                .get("recommendedName", {})
+                .get("fullName", {})
+                .get("value", "Unknown")
+        )
+        organism = data.get("organism", {}).get("scientificName", "Unknown")
+        if not sequence_length:
+            return None
+
+        disordered_positions = set()
+        for feat in data.get("features", []):
+            feat_type   = feat.get("type", "").lower()
+            description = feat.get("description", "").lower()
+            is_disorder = (
+                feat_type == "region" and "disorder" in description
+            ) or feat_type == "compositionally biased"
+            if is_disorder:
+                start = feat.get("location", {}).get("start", {}).get("value")
+                end   = feat.get("location", {}).get("end",   {}).get("value")
+                if start and end:
+                    disordered_positions.update(range(int(start), int(end) + 1))
+
+        disorder_percent = (
+            round(len(disordered_positions) / sequence_length * 100, 1)
+            if disordered_positions else None
+        )
+        return {
+            "found":               True,
+            "source":              "UniProt",
+            "name":                protein_name,
+            "organism":            organism,
+            "sequence_length":     sequence_length,
+            "disorder_percent":    disorder_percent,
+            "disordered_residues": len(disordered_positions),
+        }
+    except Exception:
+        return None
+
+
+@lru_cache(maxsize=None)
+def get_disprot_info(uniprot_id: str) -> Dict[str, Any]:
+    uniprot_id = uniprot_id.strip().upper()
+    base_id    = _strip_isoform(uniprot_id)
+
+    disprot_link      = (
+        f"https://disprot.org/browse?acc={base_id}"
+        f"&release=current&show_ambiguous=true&show_obsolete=false"
+    )
+    disprot_link_text = f"Search {base_id} in DisProt"
+
+    def _not_found_result(reason: str = "") -> dict:
+        return {
+            "found":            False,
+            "source":           None,
+            "disprot_id":       None,
+            "name":             None,
+            "organism":         None,
+            "sequence_length":  None,
+            "disorder_percent": None,
+            "link":             disprot_link,
+            "link_text":        disprot_link_text,
+            "reason":           reason,
+        }
+
+    # ── Stage 1: DisProt (filtered from cached full DB) ───────────────────
+    try:
+        entry = _find_in_disprot(base_id)
+        if entry:
+            disprot_id       = entry.get("disprot_id", "")
+            disorder_percent = _parse_disorder(entry.get("disorder_content"))
+            matched_acc      = entry.get("acc", base_id)
+            return {
+                "found":            True,
+                "source":           "DisProt",
+                "disprot_id":       disprot_id,
+                "name":             entry.get("name"),
+                "organism":         entry.get("organism"),
+                "sequence_length":  entry.get("length"),
+                "disorder_percent": disorder_percent,
+                "matched_isoform":  matched_acc,
+                "link": (
+                    f"https://disprot.org/{disprot_id}"
+                    if disprot_id else disprot_link
+                ),
+                "link_text": (
+                    f"View {disprot_id} ({matched_acc}) in DisProt"
+                    if disprot_id else disprot_link_text
+                ),
+            }
+
+        # DisProt reachable but no entry for this protein
+        return _not_found_result("no entry in DisProt")
+
+    except (requests.exceptions.Timeout,
+            requests.exceptions.ReadTimeout,
+            requests.exceptions.ConnectionError,
+            requests.exceptions.SSLError):
+        pass  # fall through to UniProt
+
+    except Exception:
+        pass
+
+    # ── Stage 2: UniProt fallback ─────────────────────────────────────────
+    uniprot_data = _fetch_uniprot_disorder(base_id)
+    if uniprot_data and uniprot_data.get("found"):
+        return {
+            "found":               True,
+            "source":              "UniProt",
+            "disprot_id":          None,
+            "name":                uniprot_data.get("name"),
+            "organism":            uniprot_data.get("organism"),
+            "sequence_length":     uniprot_data.get("sequence_length"),
+            "disorder_percent":    uniprot_data.get("disorder_percent"),
+            "disordered_residues": uniprot_data.get("disordered_residues", 0),
+            "link":                disprot_link,
+            "link_text":           disprot_link_text,
+            "reason":              "DisProt unreachable – disorder data from UniProt annotations",
+        }
+
+    # ── Stage 3: Both failed ──────────────────────────────────────────────
+    return _not_found_result("DisProt and UniProt both unreachable")
+def has_missed_cleavage(peptide: str) -> bool:
+    """
+    Returns True if the peptide has one or more missed cleavages (i.e. NOT fully tryptic).
+    Respects the biological rule: Trypsin does NOT cut at K-P or R-P bonds.
+    
+    Fully tryptic peptides must:
+    - NOT start with K or R
+    - End with K or R
+    - Have no internal K/R unless followed by P (proline exception)
+    """
+    seq = peptide.strip().upper()
+    if len(seq) < 2:
+        return True
+
+    # 1. Starts with K/R → missed cleavage at N-terminus
+    if seq[0] in 'KR':
+        return True
+
+    # 2. Does not end with K/R → missed cleavage at C-terminus
+    if seq[-1] not in 'KR':
+        return True
+
+    # 3. Internal missed cleavage: K or R not followed by P (and not at the end)
+    for i in range(len(seq) - 2):
+        if seq[i] in 'KR' and seq[i + 1] != 'P':
+            return True  # There's a cleavable site inside → missed cleavage
+
+    return False  # Fully tryptic!
+
+
+def find_valid_peptides(sequence: str, peptides: List[str], protein_id: str = ""
+                        ) -> Tuple[List[str], List[Tuple[str, str]]]:
+    """
+    Returns (valid_peptides, invalid_peptides) based on strict proteotypic rules.
+    Accepts peptides that are:
+      - Preceded by K or R
+      - At protein start (position 0)
+      - At position 1 if protein starts with 'M' (common in UniProt/FASTA)
+    """
+    seq = sequence.upper()
+    valid : List[str]=[]
+    unmatched: List[tuple[str,str]]= []
+    
+    # Allow N-terminal peptides at position 0 or 1 (if protein starts with M)
+    n_term_positions = [0]
+    if seq.startswith('M'):
+        n_term_positions.append(1)
+
+    seen = set()  # Avoid duplicates
+    for peptide in peptides:
+        pep = peptide.strip().upper()
+        if not pep or len(pep) < 6 or pep in seen:
+            continue
+        seen.add(pep)
+
+        # Find all occurrences
+        start_pos = 0
+        found_valid = False
+        reason = ""
+
+        while True:
+            pos = seq.find(pep, start_pos)
+            if pos == -1:
+                break
+
+            # Check if this occurrence is validly cleaved
+            if pos in n_term_positions:
+                found_valid = True
+                reason = "N-terminal peptide (incl. after M)" if pos == 1 else "Protein N-terminus"
+                break
+            elif pos > 0 and seq[pos - 1] in 'KR':
+                found_valid = True
+                reason = f"Preceded by {seq[pos-1]}"
+                break
+
+            start_pos = pos + 1  # Continue searching overlapping
+
+        if found_valid:
+            valid.append(pep)
+            print(f"Peptide '{pep}' for {protein_id} validated: {reason}")
+        else:
+            # Check if peptide exists at all
+            if seq.find(pep) != -1:
+                unmatched.append((pep, "Found but no valid tryptic cleavage site"))
+            else:
+                unmatched.append((pep, "Not found in protein sequence"))
+
+    return valid, unmatched
+# --- Helper Functions ---
+def compute_z_scores(intensities, is_frequency=False):
+    if is_frequency:                     # frequency already 0-1 → simple standardisation
+        m, s = np.mean(intensities), np.std(intensities)
+        return np.zeros_like(intensities) if s == 0 else (intensities - m) / s
+    else:
+        log_int = np.log10(intensities + 1)
+        m, s = np.mean(log_int), np.std(log_int)
+        return np.zeros_like(log_int) if s == 0 else (log_int - m) / s
+def clean_and_find_mods(mod_seq: str):
+    """
+    Robust parser for Modified.Sequence with UniMod tags.
+    Returns: cleaned_seq (str), mod_list [(abs_pos_0based, 'UniMod:xx'), ...]
+    Handles N-term mods correctly.
+    """
+    cleaned = []
+    mods = []
+    i = 0
+    pos = 0  # residue position (0-based)
+    n_term_mods = []  # collect before first AA
+
+    while i < len(mod_seq):
+        c = mod_seq[i]
+        if c.isalpha():
+            cleaned.append(c.upper())
+            pos += 1
+            i += 1
+        elif c == '(':
+            # Find closing )
+            j = mod_seq.find(')', i)
+            if j == -1:
+                i += 1
+                continue
+            tag = mod_seq[i+1:j]
+            if tag.startswith('UniMod:'):
+                um = tag
+                if pos > 0:
+                    mods.append((pos - 1, um))  # attach to previous AA
+                else:
+                    n_term_mods.append(um)  # N-term
+            i = j + 1
+        else:
+            i += 1
+
+    cleaned_seq = ''.join(cleaned)
+
+    # Map N-term mods to position 0 (common convention)
+    for um in n_term_mods:
+        mods.append((0, um))
+
+    return cleaned_seq, mods
+def map_peptides_to_residues(df, protein_seq, intensity_col, overlap_strategy='merge', ptm_col=None, apply_tryptic=False,proteotypic_only=False, pre_computed_z_scores=None):
+    seq_len = len(protein_seq)
+    residue_vals = [None] * seq_len
+    ptm_positions = {}  # ← This will collect ALL PTMs, even from zero-intensity peptides
+    n_term_offset = 1 if protein_seq.startswith('M') else 0
+    # ------------------------------------------------------------------
+    # STEP 1: PRE-COLLECT ALL PTMs — INDEPENDENT OF INTENSITY (THE FIX)
+    # ------------------------------------------------------------------
+    if ptm_col and st.session_state.ptm_enabled:
+        for _, row in df.iterrows():
+            if ptm_col not in row or pd.isna(row[ptm_col]):
+                continue
+            # KEY FIX: check that this row has intensity in the current condition
+            if intensity_col not in row:
+                continue
+            row_intensity = row[intensity_col]
+            if pd.isna(row_intensity) or row_intensity == 0:
+                continue
+            mod_seq = str(row[ptm_col])
+            if '(UniMod:' not in mod_seq:
+                continue
+
+            pep = row['Stripped.Sequence']
+            if pd.isna(pep):
+                continue
+
+            cleaned_pep, mods = clean_and_find_mods(mod_seq)
+            if cleaned_pep != pep:
+                continue
+
+            # Find all positions of this peptide in protein
+            matches = list(re.finditer(re.escape(pep), protein_seq))
+            for match in matches:
+                if apply_tryptic and match.start() > 0 and protein_seq[match.start() - 1] not in 'KR':
+                    continue
+                start = match.start()
+                for rel_pos, unismod in mods:
+                    abs_pos = start + rel_pos
+                    if 0 <= abs_pos < seq_len:
+                        key = unismod
+                        ptm_positions.setdefault(key, set()).add(abs_pos)
+
+    # ------------------------------------------------------------------
+    # STEP 2: NORMAL intensity/frequency mapping (unchanged — keeps real coverage!)
+    # ------------------------------------------------------------------
+    if intensity_col not in df.columns:
+        raise ValueError(
+            f"intensity_col='{intensity_col}' not found in DataFrame. "
+            f"Available columns: {list(df.columns)}"
+        )
+    peptides = df.groupby('Stripped.Sequence')[intensity_col].mean().reset_index()
+    
+    # Use pre-computed z-scores if provided (for single peptide view), otherwise compute fresh
+    if pre_computed_z_scores is not None:
+        z_scores = pre_computed_z_scores
+    else:
+        z_scores = compute_z_scores(peptides[intensity_col], is_frequency=st.session_state.is_frequency)
+
+    for idx, row in df.iterrows():
+        pep = row['Stripped.Sequence']
+        intensity = row[intensity_col]
+        
+        has_modification = (
+            ptm_col and 
+            ptm_col in row and 
+            pd.notna(row[ptm_col]) and 
+            '(UniMod:' in str(row[ptm_col])
+        )
+
+        if pd.isna(intensity):
+            #if not (st.session_state.is_frequency and has_modification):
+                continue
+            # Allow processing with intensity = 0 → frequency contribution = 0
+        if  intensity == 0: 
+            if not st.session_state.is_frequency:
+                continue
+            if not has_modification:
+                continue
+    # In intensity mode: zero is zero → skip unless modified (but still parse PTM)
+        matches = list(re.finditer(re.escape(pep), protein_seq))
+        if not matches:
+            continue
+
+        valid_found = False
+        for match in matches:
+            start = match.start()
+            if apply_tryptic and start > 0 and protein_seq[start - 1] not in 'KR':
+                continue
+            valid_found = True
+            end = start + len(pep)
+
+            peptide_match = peptides[peptides['Stripped.Sequence'] == pep]
+            if peptide_match.empty:
+                continue
+            z_val = z_scores[peptide_match.index[0]]
+
+            for i in range(start, end):
+                if residue_vals[i] is None:
+                    residue_vals[i] = [z_val]
+                else:
+                    residue_vals[i].append(z_val)
+
+            # PTM parsing (only from non-zero intensity peptides — but we already pre-collected all!)
+            if ptm_col and ptm_col in row and pd.notna(row[ptm_col]) and '(UniMod:' in str(row[ptm_col]):
+                cleaned_pep, mods = clean_and_find_mods(row[ptm_col])
+                if cleaned_pep == pep:
+                    for rel_pos, unismod in mods:
+                        abs_pos = start + rel_pos
+                        if 0 <= abs_pos < seq_len:
+                            key =unismod
+                            ptm_positions.setdefault(key, set()).add(abs_pos)
+
+        if not valid_found:
+            continue
+
+    # Resolve overlaps (unchanged)
+    for i in range(seq_len):
+        if residue_vals[i]:
+            if overlap_strategy == 'merge':
+                residue_vals[i] = np.mean(residue_vals[i])
+            elif overlap_strategy == 'highest':
+                residue_vals[i] = np.max(residue_vals[i])
+            else:
+                residue_vals[i] = residue_vals[i][-1]
+        else:
+            residue_vals[i] = None
+
+    # Ensure PTM positions are visible in linear plot (frequency mode)
+    if st.session_state.is_frequency:
+        for positions in ptm_positions.values():
+            for pos in positions:
+                if residue_vals[pos] is None:
+                    residue_vals[pos] = 0  # ← only for visualization!
+
+    # Convert sets to sorted lists
+    for k in ptm_positions:
+        ptm_positions[k] = sorted(list(ptm_positions[k]))
+
+    return residue_vals, ptm_positions
+
+def generate_colormap(residue_vals, cmap_name='autumn',
+                      not_mapped_color='#d3d3d3',
+                      vmin=None, vmax=None):
+    cmap = colormaps[cmap_name]
+    vals = [v for v in residue_vals if v is not None]
+    if not vals:
+        vmin, vmax = 0, 1
+    else:
+        if vmin is None or vmax is None:
+            vmin, vmax = min(vals), max(vals)
+        # (optional) add a tiny margin
+        margin = max(0.01, (vmax - vmin) * 0.05)
+        vmin -= margin
+        vmax += margin
+
+    hex_colors = []
+    for val in residue_vals:
+        if val is None:
+            hex_colors.append(not_mapped_color)
+        else:
+            norm = (val - vmin) / (vmax - vmin) if vmax > vmin else 0.5
+            rgb = cmap(norm)[:3]
+            hex_colors.append(mcolors.rgb2hex(rgb))
+    return hex_colors, vmin, vmax
+def _z_range(residue_vals):
+    """Return min/max of non-None Z-scores with a tiny margin."""
+    valid = [v for v in residue_vals if v is not None]
+    if not valid:
+        return 0, 1
+    mn, mx = min(valid), max(valid)
+    margin = max(0.01, (mx - mn) * 0.05)
+    return mn - margin, mx + margin
+def extract_plddt_and_model(pdb_str, protein_seq):
+    parser = PDBParser(QUIET=True)
+    pdb_io = io.StringIO(pdb_str)
+    structure = parser.get_structure('model', pdb_io)
+    model_name = "Unknown Model"
+    plddt_list = [None] * len(protein_seq)
+    if 'HEADER' in pdb_str:
+        header_match = re.search(r'HEADER\s+\S+\s+\S+\s+(.+?)\s+\d{2}', pdb_str, re.IGNORECASE)
+        if header_match:
+            model_name = header_match.group(1).strip()
+    else:
+        model_name = "AF-" + base_id + "-F1-model_v6" if 'base_id' in globals() else "AlphaFold Model"
+    for model in structure:
+        for chain in model:
+            for residue in chain:
+                if 'CA' in residue:
+                    res_id = residue.id[1] - 1
+                    if 0 <= res_id < len(protein_seq):
+                        b_factor = residue['CA'].get_bfactor()
+                        plddt_list[res_id] = b_factor
+                    #st.write(f"PDB residue: {res_id}, chain: {chain.id}, pLDDT: {b_factor}")  # Debug
+    valid_plddt = [v for v in plddt_list if v is not None]
+    mean_plddt = np.mean(valid_plddt) if valid_plddt else None
+    return plddt_list, model_name, mean_plddt
+def add_ptm_spheres(viewer_index, ptm_dict, condition_name, view,
+                    coords_map=None, pdb_str=None):
+    """
+    Fixed version: ONE sphere per modified residue. No double nesting.
+    """
+    if not ptm_dict:
+        return
+
+    for unimod, info in ptm_dict.items():
+        # Normalize input
+        if isinstance(info, (list, set, tuple)):
+            positions = list(info)
+            selected = True
+            color = "#FF0000"
+            label = unimod
+        elif isinstance(info, dict):
+            positions = info.get("positions", [])
+            if isinstance(positions, dict):
+                positions = positions.get("positions", [])
+            positions = list(positions)
+            selected = info.get("selected", True)
+            color = info.get("color", "#FF0000")
+            label = info.get("label", unimod)
+        else:
+            continue
+
+        if not selected or not positions:
+            continue
+
+        num = re.search(r"\d+", str(unimod))
+        num = num.group() if num else "?"
+
+        # ONE LOOP ONLY — try all methods until success
+        for pos0 in positions:
+            resi = str(int(pos0) + 1)
+            added = False
+
+            # 1. Try standard CA atom
+            try:
+                view.addSphere({
+                    "center": {"resi": resi, "chain": "A", "atom": "CA"},
+                    "radius": 2.2, "color": color, "alpha": 0.95
+                }, viewer=viewer_index)
+                view.addLabel(num, {
+                    "fontSize": 15, "fontColor": color,
+                    "backgroundColor": "white", "backgroundOpacity": 0.9
+                }, {"resi": resi, "chain": "A"}, viewer=viewer_index)
+                added = True
+            except:
+                pass  # CA not found → try next
+
+            # 2. Try HETATM with same residue number (e.g. PTR, SEP, TPO)
+            if not added and pdb_str:
+                het_line = None
+                for line in pdb_str.splitlines():
+                    if line.startswith(("ATOM  ", "HETATM")) and line[22:26].strip() == resi:
+                        het_line = line
+                        break  # take first atom of the residue
+                if het_line:
+                    try:
+                        x = float(het_line[30:38])
+                        y = float(het_line[38:46])
+                        z = float(het_line[46:54])
+                        view.addSphere({
+                            "center": {"x": x, "y": y, "z": z},
+                            "radius": 2.6, "color": color, "alpha": 0.98
+                        }, viewer=viewer_index)
+                        view.addLabel(num, {
+                            "fontSize": 16, "fontColor": color,
+                            "backgroundColor": "white", "backgroundOpacity": 0.9
+                        }, {"position": {"x": x, "y": y, "z": z}}, viewer=viewer_index)
+                        added = True
+                    except:
+                        pass
+
+            # 3. Final fallback: use pre-parsed CA coords
+            if not added and coords_map and int(pos0) in coords_map:
+                x, y, z, _ = coords_map[int(pos0)]
+                view.addSphere({
+                    "center": {"x": x, "y": y, "z": z},
+                    "radius": 2.6, "color": color, "alpha": 0.98
+                }, viewer=viewer_index)
+                view.addLabel(num, {
+                    "fontSize": 16, "fontColor": color,
+                    "backgroundColor": "white", "backgroundOpacity": 0.9
+                }, {"position": {"x": x, "y": y, "z": z}}, viewer=viewer_index)
+    # Force re-render (sometimes needed)
+    try:
+        view.render()
+    except Exception:
+        pass
+       
+def normalize_ptm_data(ptm_dict):
+        """Ensure ptm_data has flat 'positions': [1,2,3] and not nested dicts."""
+        if not ptm_dict:
+            return {}
+        normalized = {}
+        for unimod, info in ptm_dict.items():
+            if isinstance(info, dict):
+                positions = info.get('positions', [])
+                # Handle double-nested case
+                if isinstance(positions, dict) and 'positions' in positions:
+                    positions = positions['positions']
+                # Ensure it's a list
+                if isinstance(positions, (list, set, tuple)):
+                    positions = sorted(list(positions))
+                else:
+                    positions = []
+                normalized[unimod] = {
+                    'positions': positions,
+                    'selected': info.get('selected', True),
+                    'color': info.get('color', '#FF0000'),
+                    'label': info.get('label', unimod)
+                }
+            else:
+                # Fallback: treat as list of positions
+                try:
+                    normalized[unimod] = {
+                        'positions': sorted(list(info)),
+                        'selected': True,
+                        'color': '#FF0000',
+                        'label': unimod
+                    }
+                except:
+                    continue
+        return normalized
+# In render_linear_plot function
+def render_linear_plot(residue_vals, title, seq_len, vmin, vmax, protein_seq, model_name, plddt_list, mean_plddt,
+                       cmap_name='viridis', not_mapped_color='#BEFDF9', highlight_residues=[], ptm_data=None,show_full_header=True,show_ptm_legend=True):
+    #Compute Z-score range (dynamic for Frequency, fixed for Intensity)
+    if st.session_state.is_frequency:
+        vmin, vmax = _z_range(residue_vals)          # <-- dynamic
+    else:
+        vmin, vmax = -3, 3                           # <-- classic intensity scale
+    hex_colors, _, _ = generate_colormap(residue_vals, cmap_name, not_mapped_color,vmin=vmin,vmax=vmax)
+    mapped = [i for i, v in enumerate(residue_vals) if v is not None]
+    mapped_js = str(mapped)
+    total_svg_width = 1200.0  # virtual canvas width in pixels (will scale to container)
+    bar_height = 30
+    lollipop_extra = 60
+    bar_y_start = lollipop_extra
+    # scale (pixels per residue in the virtual canvas)
+    scale = (total_svg_width / seq_len) if seq_len > 0 else 1.0
+    total_width = total_svg_width
+    x_offset = 30
+    # place numeric labels below the bar (offset from bar_y_start)
+    label_offset = bar_y_start + bar_height + 15
+    # === SVG canvas size ===
+    #svg_top_padding = lollipop_extra + 5
+    svg_bottom_padding = 40
+    total_height = label_offset + 20
+    container_height = total_height + 120 + svg_bottom_padding
+    #total_height = label_offset + 20 + lollipop_extra
+    bars = ""
+    for i in range(seq_len):
+        x = i * scale + x_offset
+        color = hex_colors[i]
+        width = max(1.0, scale)
+        aa = protein_seq[i] if i < len(protein_seq) else 'X'
+        z_val = f"{residue_vals[i]:.2f}" if residue_vals[i] is not None else "N/A"
+        tooltip = f"Pos {i+1} ({aa}): Z-Score={z_val}"
+        is_mapped = i in mapped
+        mapped_attr = 'True' if is_mapped else 'False'
+        bars += f'<rect x="{x}" y="{bar_y_start}" width="{width}" height="{bar_height}" fill="{color}" '
+        bars += f'stroke="#666" stroke-width="0.5" data-pos="{i}" data-mapped="{mapped_attr}" title="{tooltip}" />'
+
+        # --------------------------------------------------------------
+        #  LOLLIPOP PTM MARKERS – collision-aware stacking above the bar
+        # --------------------------------------------------------------
+        ptm_lines = ""
+        ptm_labels = ""
+
+        # Lollipop layout (relative to bar at y = bar_y_start)
+        stem_height = 22
+        circle_radius = 3.0
+        # Place candy just above the bar (small gap) so it visually sits on the bar
+        candy_y = bar_y_start - circle_radius - 2
+        base_label_y = candy_y - circle_radius - 4
+        font_size = 12 if seq_len <= 600 else 9
+
+        def _flat(info):
+            p = info.get("positions", [])
+            if isinstance(p, dict) and "positions" in p:
+                p = p["positions"]
+            if isinstance(p, (list, set, tuple)):
+                return [int(x) for x in p if x is not None]
+            try:
+                return [int(p)]
+            except Exception:
+                return []
+
+        # Collect markers first so we can do overlap detection and stacking
+        markers = []  # each: {'x': float, 'txt': str, 'color': str, 'pos0': int}
+        if ptm_data:
+            for unimod, info in ptm_data.items():
+                if not info.get("selected", True):
+                    continue
+                color = info.get("color", "#FF0000")
+                label = info.get("label", unimod)
+                for pos0 in _flat(info):
+                    try:
+                        x = pos0 * scale + x_offset
+                    except Exception:
+                        continue
+                    # Use the raw position as stored in ptm_data (0-based) so labels match debug output
+                    txt = f"{pos0}"
+                    markers.append({'x':float(x),'txt': txt, 'color': color, 'pos0': int(pos0)})
+        placed_levels = []  # list of lists of x positions per level
+        level_assignments = []  # parallel to markers
+        # Estimate horizontal threshold in pixels: depends on text length and font size
+        for m in markers:
+            txt_len = max(4, len(m['txt']))
+            # approximate char width multiplier; scaled by pixel_per_res for narrow plots
+            approx_char_w = font_size * 0.6
+            th = max(12, approx_char_w * txt_len)
+            # find lowest level where this marker doesn't collide
+            level = 0
+            while True:
+                if level >= len(placed_levels):
+                    placed_levels.append([m['x']])
+                    level_assignments.append(level)
+                    break
+                else:
+                    collide = False
+                    for ox in placed_levels[level]:
+                        if abs(ox - m['x']) < th:
+                            collide = True
+                            break
+                    if not collide:
+                        placed_levels[level].append(m['x'])
+                        level_assignments.append(level)
+                        break
+                    level += 1
+
+        # Now build SVG pieces using assigned levels
+        label_spacing = max(14, int(font_size * 1.5))
+        for m, lvl in zip(markers, level_assignments):
+            x = m['x'] + (scale / 2.0)
+            # start the stem from the exact bottom of the bar so it visibly emerges from the bar
+            stem_y1 = bar_y_start + bar_height
+            # stem top should reach the bottom of the candy circle
+            stem_y2 = candy_y + circle_radius
+            ptm_lines += f'<line x1="{x}" y1="{stem_y1}" x2="{x}" y2="{stem_y2}" ' \
+                        f'stroke="{m["color"]}" stroke-width="1.4"/>'
+
+            ptm_lines += f'<circle cx="{x}" cy="{candy_y}" r="{circle_radius}" ' \
+                        f'fill="{m["color"]}" stroke="{m["color"]}" stroke-width="1.0"/>'
+
+            # label y depends on level (higher level => more negative y)
+            label_y = base_label_y - (lvl * label_spacing)
+            # center text and make it bold for visibility
+            safe_txt = m['txt']
+            ptm_labels += f'<text x="{x}" y="{label_y}" font-size="{font_size}" ' \
+                          f'fill="{m["color"]}" text-anchor="middle" font-weight="bold">{safe_txt}</text>'
+    label_step = max(1, int(50 / scale) if seq_len>100 else 5)
+    labels = ""
+    for i in range(0, seq_len, label_step):
+        x = i * scale + (scale / 2) + x_offset
+        labels += f'<text x="{x}" y="{label_offset}" font-size="{12 if seq_len<=500 else 10}" text-anchor="middle" fill="#333">{i+1}</text>'
+    mean_plddt_display = f"{mean_plddt:.1f}" if mean_plddt is not None else "N/A"
+    title_style = "font-size:18px; margin-bottom:5px; font-weight:bold; color:#FFFFFF; background: rgba(0,0,0,0.55); padding:6px 10px; border-radius:8px; display:inline-block;"
+    subtitle_style = "font-size:12px; color:#FFFFFF;"
+    container_style = "width:100%; text-align:center; margin-bottom:10px;"
+    if show_full_header:
+        if st.session_state.is_frequency:
+            title_html = f'<div style="{container_style}"><div style="{title_style}">{title}<br><span style="{subtitle_style}">Frequency (0-1) | Mean pLDDT: {mean_plddt_display}</span></div></div>'
+        else:
+            title_html = f'<div style="{container_style}"><div style="{title_style}">{title}<br><span style="{subtitle_style}">{model_name} | Mean pLDDT: {mean_plddt_display}</span></div></div>'
+    else:
+        title_html = f'<div style="{container_style}"><div style="{title_style}">{title}</div></div>'
+        # Build a legend for PTM colors (show UniMod id -> color) so users can relate colors chosen in PTM config
+    legend_html = ""
+    if show_ptm_legend:
+        try:
+            if ptm_data and isinstance(ptm_data, dict):
+                items = []
+                for unimod, info in ptm_data.items():
+                    if not info.get("selected", True):
+                        continue
+                    color = info.get("color", "#FF0000")
+                    # Prefer explicit label if provided; otherwise show numeric unimod (strip prefix if present)
+                    label = info.get("label", unimod)
+                    # normalize label text
+                    lab_text = str(label).replace("UniMod:", "").strip()
+                    items.append((lab_text, color))
+                if items:
+                    # build a horizontal legend with small color swatches
+                    legend_items_html = "".join([
+                        f'<div style="display:flex; align-items:center; margin-right:12px;">'
+                        f'<div style="width:14px; height:14px; background:{c}; border:1px solid #444; margin-right:6px; border-radius:2px;"></div>'
+                        f'<div style="font-size:12px; color:#ffff;">{lbl}</div>'
+                        f'</div>' for lbl, c in items
+                    ])
+                    legend_html = f'<div style="display:flex; flex-wrap:wrap; justify-content:center; gap:8px; margin-bottom:6px;">{legend_items_html}</div>'
+        except Exception:
+            legend_html = ""
+    extra_top_space = 30
+    # Draw bars first, then PTM lollipops and labels on top so markers are visible
+    svg = f'<svg viewBox="-{x_offset} 0 {int(total_width + x_offset*2 + 40)} {int(total_height + extra_top_space + 40)}" width="100%" preserveAspectRatio="xMinYMid meet" ' \
+        f'style="overflow:visible; background:#fff; border:1px solid #ddd; border-radius:6px; padding:20px;">' \
+        f'{bars}{ptm_lines}{ptm_labels}{labels}</svg>'
+    container_html = f'<div style="overflow-x:auto; max-width:100%; margin:10px 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">{svg}</div>'
+    # combine title, legend and svg
+    # legend_html may be empty if no PTMs configured
+    js = f"""
+    <script>
+    const mapped = {mapped_js};
+    const rects = document.querySelectorAll('rect[data-pos]');
+    rects.forEach(el => {{
+    const pos = parseInt(el.getAttribute('data-pos'));
+    const isMapped = mapped.includes(pos);
+    if (isMapped) {{
+        el.style.cursor = 'pointer';
+        el.addEventListener('click', e => {{
+        const pos = parseInt(e.target.getAttribute('data-pos'));
+        window.parent.postMessage({{ type: 'SELECT_RESIDUE', residue: pos }}, '*');
+        }});
+    }}
+    el.addEventListener('mouseover', e => {{
+        if (e.target.title) {{
+        e.target.style.opacity = '0.7';
+        e.target.style.strokeWidth = '1';
+        }}
+    }});
+    el.addEventListener('mouseout', e => {{
+        e.target.style.opacity = '1';
+        e.target.style.strokeWidth = '0.5';
+    }});
+    // ---- NEW: visual highlight of the clicked bar ----
+    const prev = document.querySelector('.clicked-residue');
+    if (prev) prev.classList.remove('clicked-residue');
+    el.classList.add('clicked-residue');
+    // ------------------------------------------------
+    }});
+    // ---- CSS for highlight ----
+    const style = document.createElement('style');
+    style.innerHTML = `
+    .clicked-residue {{ filter: brightness(1.3); stroke: #FFD700; stroke-width: 3; }}
+        `;
+    document.head.appendChild(style);
+    </script>
+    """
+    st.components.v1.html(title_html + legend_html + container_html + js, height=container_height+20)
+    return None,None
+
+def render_synced_viewers(pdb_str, residue_vals_list, bg_color, title_list, cmap_name='autumn', not_mapped_color='#d3d3d3', ptm_data_list=None):
+    num_conditions = len(residue_vals_list)
+    if num_conditions < 2 or num_conditions > 4:
+        st.error(f"Unsupported number of conditions: {num_conditions}. Must be 2-4.")
+        return
+
+    # Determine grid based on number of conditions
+    if num_conditions == 2:
+        grid = (1, 2)
+    elif num_conditions == 3:
+        grid = (1, 3)
+    elif num_conditions == 4:
+        grid = (2, 2)
+
+    # Compute global vmin/vmax across all conditions
+    all_vals = [v for res in residue_vals_list for v in res if v is not None]
+    if st.session_state.is_frequency:
+        vmin= min(all_vals, default=0)
+        vmax= max(all_vals,default= 1)
+        margin = max(0.01, (vmax - vmin) * 0.05)
+        vmin -= margin
+        vmax += margin
+    else:
+        vmin, vmax = -3, 3
+
+    # Generate hex_colors for each condition using global vmin/vmax
+    hex_colors_list = []
+    for residue_vals in residue_vals_list:
+        hex_colors, _, _ = generate_colormap(residue_vals, cmap_name, not_mapped_color, vmin=vmin, vmax=vmax)
+        hex_colors_list.append(hex_colors)
+
+    # Residues JS for each
+    residues_js_list = [json.dumps([i for i, v in enumerate(res) if v is not None]) for res in residue_vals_list]
+
+    # Create view with grid
+    view = py3Dmol.view(width='100vw', height='400px', viewergrid=grid, linked=True)
+
+    # Add models to each viewer
+    for idx in range(num_conditions):
+        row = idx // grid[1]
+        col = idx % grid[1]
+        view.addModel(pdb_str, 'pdb', viewer=(row, col))
+
+    bg_color_map = {'white': '#FFFFFF', 'black': '#000000', 'darkgrey': '#4A4A4A'}
+    bg_color_hex = bg_color_map.get(bg_color.lower(), '#000000')
+
+    # Set background and initial style for each viewer
+    for idx in range(num_conditions):
+        row = idx // grid[1]
+        col = idx % grid[1]
+        view.setBackgroundColor(bg_color_hex, viewer=(row, col))
+        view.setStyle({}, {'cartoon': {'color': 'lightgray'}}, viewer=(row, col))
+
+    # Apply colors
+    cmap = colormaps[cmap_name]
+    norm = Normalize(vmin=vmin, vmax=vmax)
+
+    def apply_colors(viewer_idx, residue_vals, hex_colors):
+        row = viewer_idx // grid[1]
+        col = viewer_idx % grid[1]
+        for i, val in enumerate(residue_vals):
+            if val is None:
+                color = not_mapped_color
+            else:
+                rgb = cmap(norm(val))[:3]
+                color = mcolors.rgb2hex(rgb)
+            view.setStyle({'resi': str(i+1)}, {'cartoon': {'color': color}}, viewer=(row, col))
+
+    for idx, (residue_vals, hex_colors) in enumerate(zip(residue_vals_list, hex_colors_list)):
+        apply_colors(idx, residue_vals, hex_colors)
+
+    # PTM spheres
+    coords_map = {}
+    try:
+        parser = PDBParser(QUIET=True)
+        pdb_io_local = io.StringIO(pdb_str)
+        struct = parser.get_structure('tmp', pdb_io_local)
+        for model in struct:
+            for chain in model:
+                for residue in chain:
+                    try:
+                        if 'CA' in residue:
+                            res_index0 = residue.id[1] - 1
+                            ca = residue['CA'].get_coord()
+                            coords_map[res_index0] = (float(ca[0]), float(ca[1]), float(ca[2]), chain.id)
+                    except Exception:
+                        continue
+    except Exception as e:
+        print(f"render_synced_viewers: failed to parse PDB for coords_map: {e}")
+    
+    # ——————————————————————————————————————————————————
+    # DRAW PTMs PER-CONDITION — each viewer only shows
+    # its own condition's PTMs (respects zero-intensity suppression)
+    # ——————————————————————————————————————————————————
+    for idx in range(num_conditions):
+        row = idx // grid[1]
+        col = idx % grid[1]
+
+        # Get this condition's PTM dict (already filtered by intensity in caller)
+        cond_ptm_raw = ptm_data_list[idx] if ptm_data_list and idx < len(ptm_data_list) else {}
+
+        if not cond_ptm_raw:
+            continue  # No PTMs for this condition — skip entirely
+
+        # Normalize positions to sorted lists (defensive)
+        cond_ptm_normalized = {}
+        for unimod, info in cond_ptm_raw.items():
+            if isinstance(info, dict):
+                positions = info.get("positions", [])
+                if isinstance(positions, dict):
+                    positions = positions.get("positions", [])
+                positions = sorted([int(p) for p in positions if p is not None])
+                selected = info.get("selected", True)
+                color = info.get("color", "#FF0000")
+                label = info.get("label", unimod)
+            elif isinstance(info, (list, set, tuple)):
+                positions = sorted([int(p) for p in info if p is not None])
+                selected = True
+                color = "#FF0000"
+                label = unimod
+            else:
+                continue
+
+            if not selected or not positions:
+                continue
+
+            cond_ptm_normalized[unimod] = {
+                "positions": positions,
+                "selected": selected,
+                "color": color,
+                "label": label,
+            }
+
+        if not cond_ptm_normalized:
+            continue
+
+        add_ptm_spheres(
+            viewer_index=(row, col),
+            ptm_dict=cond_ptm_normalized,
+            condition_name=title_list[idx] if title_list and idx < len(title_list) else str(idx),
+            view=view,
+            coords_map=coords_map,
+            pdb_str=pdb_str
+        )
+
+    # Zoom to each viewer
+    for idx in range(num_conditions):
+        row = idx // grid[1]
+        col = idx % grid[1]
+        #view.setStyle({}, {"cartoon":{"opacity":0.85}}, viewer=(row, col))
+        view.zoomTo(viewer=(row, col))
+
+    view.render()
+
+    # JS for hover and pick
+    hover_js = f"""
+    <script>
+    document.addEventListener("DOMContentLoaded", function() {{
+        function tryInitViewers(retryCount = 8, delay = 400) {{
+            try {{
+                let viewerElems = document.getElementsByClassName("viewer_3Dmoljs");
+                if (!viewerElems || viewerElems.length < {num_conditions}) {{
+                    if (retryCount > 0) {{
+                        console.warn('Not enough viewer elements found (' + (viewerElems ? viewerElems.length : 0) + '/{num_conditions}), retrying in ' + delay + 'ms');
+                        setTimeout(() => tryInitViewers(retryCount - 1, delay), delay);
+                    }} else {{
+                        console.error('Failed to find enough viewer elements after retries');
+                    }}
+                    return;
+                }}
+
+                let viewers = [];
+                try {{
+                    if (window.$3Dmol && typeof $3Dmol.getViewer === 'function') {{
+                        for (let i = 0; i < {num_conditions}; i++) {{
+                            viewers.push($3Dmol.getViewer(viewerElems[i]));
+                        }}
+                    }} else {{
+                        for (let i = 0; i < {num_conditions}; i++) {{
+                            viewers.push(viewerElems[i].querySelector('div > canvas')?.parentElement?.viewer);
+                        }}
+                    }}
+                }} catch (err) {{
+                    console.warn('Error resolving viewers', err);
+                }}
+
+                if (viewers.length < {num_conditions} || viewers.some(v => !v)) {{
+                    if (retryCount > 0) {{
+                        setTimeout(() => tryInitViewers(retryCount - 1, delay), delay);
+                    }} else {{
+                        console.error('Viewers not resolved');
+                    }}
+                    return;
+                }}
+
+                const residues_list = {json.dumps(residues_js_list)};
+
+                function handlePick(viewer_idx) {{
+                    return function(atom, event) {{
+                        if (!atom) return;
+                        const resi = parseInt(atom.resi, 10) - 1;
+                        if (residues_list[viewer_idx].includes(resi)) {{
+                            window.parent.postMessage({{ type: 'SELECT_RESIDUE', residue: resi }}, '*');
+                        }}
+                    }}
+                }}
+
+                for (let i = 0; i < {num_conditions}; i++) {{
+                    viewers[i].setClickable({{}}, true, handlePick(i));
+                }}
+
+            }} catch(e) {{
+                if (retryCount > 0) {{
+                    setTimeout(() => tryInitViewers(retryCount - 1, delay), delay);
+                }}
+            }}
+        }}
+        tryInitViewers();
+    }});
+    </script>
+    """
+
+    # Listener JS
+    listener_js = f"""
+    <script>
+    document.addEventListener("DOMContentLoaded", function() {{
+        let previous_selected = null;
+        const observer = new MutationObserver(() => {{
+            const viewerElems = document.getElementsByClassName("viewer_3Dmoljs");
+            if (viewerElems.length >= {num_conditions}) {{
+                observer.disconnect();
+            }}
+        }});
+        observer.observe(document.body, {{ childList: true, subtree: true }});
+        
+        window.addEventListener("message", (event) => {{
+            if (event.data && event.data.type === "SELECT_RESIDUE") {{
+                const residue = event.data.residue;
+                try {{
+                    const viewerElems = document.getElementsByClassName("viewer_3Dmoljs");
+                    if (viewerElems.length < {num_conditions}) {{
+                        setTimeout(() => window.dispatchEvent(new MessageEvent("message", {{ data: event.data }})), 100);
+                        return;
+                    }}
+                    let viewers = [];
+                    for (let i = 0; i < {num_conditions}; i++) {{
+                        viewers.push(viewerElems[i].querySelector('div > canvas').parentElement.viewer);
+                    }}
+                    
+                    if (previous_selected !== null) {{
+                        const prev_span = document.querySelector(`.aa[data-pos="${{previous_selected}}"]`);
+                        if (prev_span) {{
+                            prev_span.style.backgroundColor = "";
+                            prev_span.style.fontWeight = "";
+                        }}
+                        const prev_bars = document.querySelectorAll(`rect[data-pos="${{previous_selected}}"]`);
+                        prev_bars.forEach(bar => {{
+                            bar.style.stroke = "none";
+                            bar.style.strokeWidth = "0";
+                        }});
+                        viewers.forEach(v => {{
+                            v.removeAllShapes();
+                            v.render();
+                        }});
+                    }}
+                    
+                    const span = document.querySelector(`.aa[data-pos="${{residue}}"]`);
+                    if (span) {{
+                        span.style.backgroundColor = "yellow";
+                        span.style.fontWeight = "bold";
+                    }}
+                    const bars = document.querySelectorAll(`rect[data-pos="${{residue}}"]`);
+                    bars.forEach(bar => {{
+                        bar.style.stroke = "red";
+                        bar.style.strokeWidth = "2";
+                    }});
+                    
+                    const resi_str = (residue + 1).toString();
+                    const spec = {{center: {{resi: resi_str, atom: 'CA'}}, radius: 5.0, color: 'red', alpha: 0.6}};
+                    viewers.forEach(v => {{
+                        v.addSphere(spec);
+                        v.center({{resi: resi_str, atom: 'CA'}});
+                        v.render();
+                    }});
+                    previous_selected = residue;
+                }} catch (e) {{
+                    console.error("Error adding 3D highlight:", e);
+                }}
+            }}
+        }});
+    }});
+    </script>
+    """
+
+    html = view._make_html()
+    titles_str = " | ".join(title_list)
+    st.markdown(f"#### {titles_str}")
+    st.components.v1.html(html + hover_js, height=420)
+    st.components.v1.html(listener_js, height=0)
+
+def create_download_zip(
+    protein_of_interest: str,
+    pdb_str: str,
+    peptide_data: Dict[str, pd.DataFrame],
+    residue_data: Dict[str, List[Optional[float]]],
+    conditions: List[str],
+    min_max_logs: Dict[str, Tuple[float, float]],
+    seq_len: int,
+    cmap_name: str = 'autumn',
+    not_mapped_color: str = '#d3d3d3',
+    ptm_data: Optional[Dict[str, Dict]] = None,
+    selected_df: Optional[pd.DataFrame] = None,
+    protein_seq: Optional[str] = None,
+    apply_tryptic: Optional[bool] = None,
+    metadata: Optional[pd.DataFrame] = None,
+) -> io.BytesIO:
+    """
+    Packs every artefact the user can see in the UI into a single ZIP.
+    """
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
+
+        # ------------------------------------------------------------------
+        # 1. PDB + peptide CSVs 
+        # ------------------------------------------------------------------
+        zipf.writestr(f"{protein_of_interest}_protein.pdb", pdb_str)
+        for cond in conditions:
+            csv_bytes = peptide_data[cond].to_csv(index=False).encode()
+            zipf.writestr(f"{protein_of_interest}_{cond}_peptides.csv", csv_bytes)
+
+        # ------------------------------------------------------------------
+        # 2. PyMOL scripts 
+        # ------------------------------------------------------------------
+        cmap = colormaps[cmap_name]
+        for cond in conditions:
+            pml = f"load {protein_of_interest}_protein.pdb\nhide everything\nshow cartoon\ncolor gray90, all\nzoom\n"
+            mn, mx = min_max_logs[cond]
+            for i in range(seq_len):
+                if residue_data[cond][i] is not None:
+                    norm = (residue_data[cond][i] - mn) / (mx - mn) if mx > mn else 0.5
+                    col_hex = mcolors.rgb2hex(cmap(norm)[:3])
+                    pml += f"color {col_hex}, resi {i+1}\n"
+            # PTM spheres
+            if ptm_data and ptm_data.get(cond):
+                for uni, info in ptm_data[cond].items():
+                    if info.get('selected', True):
+                        col_hex = info.get('color', '#FF0000')
+                        for pos0 in info.get('positions', []):
+                            resi = pos0 + 1
+                            pml += f"pseudoatom ptm_{uni}_{resi}, resi {resi} and name CA\n"
+                            pml += f"show spheres, ptm_{uni}_{resi}\n"
+                            pml += f"set sphere_scale, 5.0, ptm_{uni}_{resi}\n"
+                            pml += f"color {col_hex}, ptm_{uni}_{resi}\n"
+            zipf.writestr(f"{protein_of_interest}_{cond}_pymol_script.pml", pml)
+
+        # ------------------------------------------------------------------
+        # 3. Linear JPEGs 
+        # ------------------------------------------------------------------
+        for cond in conditions:
+            w = min(25, max(10, seq_len / 20))
+            fig, ax = plt.subplots(figsize=(w, 1), dpi=600)
+            ax.add_patch(patches.Rectangle((0, 0), seq_len, 1,
+                                           facecolor=not_mapped_color, edgecolor='none'))
+            mn, mx = min_max_logs[cond]
+            for i in range(seq_len):
+                if residue_data[cond][i] is not None:
+                    norm = (residue_data[cond][i] - mn) / (mx - mn) if mx > mn else 0.5
+                    ax.add_patch(patches.Rectangle((i, 0), 1, 1,
+                                                   facecolor=cmap(norm)[:3], edgecolor='none'))
+            ax.set_xlim(0, seq_len); ax.set_ylim(0, 1); ax.set_yticks([])
+            ax.set_xlabel(f'Amino Acid Position ({cond})', fontsize=30)
+            ax.tick_params(axis='x', labelsize=15)
+            buf = io.BytesIO()
+            plt.savefig(buf, format='jpeg', dpi=600, bbox_inches='tight')
+            plt.close(fig)
+            suffix = "_freq" if st.session_state.is_frequency else ""
+            zipf.writestr(f"{protein_of_interest}_{cond}{suffix}_linear.jpeg", buf.getvalue())
+
+        # ------------------------------------------------------------------
+        # 4. PTM-position CSV 
+        # ------------------------------------------------------------------
+        if selected_df is not None and protein_seq is not None and metadata is not None:
+            # ---- build a map: sample column → group name -----------------
+            sample_to_group = dict(zip(metadata['File_Name'], metadata['Group']))
+
+            ptm_rows = []
+            for _, row in selected_df.iterrows():
+                prot = row['Protein.Group']
+                stripped = row.get('Stripped.Sequence', 'NA')
+                if pd.isna(stripped):
+                    stripped = 'NA'
+
+                # ---- intensities per *selected* condition ----------------
+                intens = [row.get(c, 'NA') for c in conditions]
+
+                # ---- decide which column holds the modification ----------
+                mod_seq = ''
+                if 'Modified.Sequence' in row and pd.notna(row['Modified.Sequence']):
+                    mod_seq = str(row['Modified.Sequence'])
+                # (no else – if there is no Modified.Sequence we treat it as unmodified)
+
+                # ---- PTM case ------------------------------------------------
+                if mod_seq and '(UniMod:' in mod_seq:
+                    cleaned, mods = clean_and_find_mods(mod_seq)
+                    if cleaned != stripped:
+                        ptm_rows.append([prot, stripped] + intens +
+                                        [mod_seq, 'Mismatch', 'NA', 'NA', 'NA'])
+                        continue
+
+                    matches = list(re.finditer(re.escape(cleaned), protein_seq))
+                    valid = False
+                    for m in matches:
+                        start = m.start()
+                        if apply_tryptic and start > 0 and protein_seq[start - 1] not in 'KR':
+                            continue
+                        valid = True
+                        pep_start = start + 1
+                        pep_end   = start + len(cleaned)
+                        for rel_pos, uni_num in mods:
+                            abs_pos = start + rel_pos + 1
+                            ptm_rows.append([prot, stripped] + intens +
+                                            [mod_seq, abs_pos, f"UniMod:{uni_num}",
+                                             pep_start, pep_end])
+                    if not valid:
+                        for rel_pos, uni_num in mods:
+                            ptm_rows.append([prot, stripped] + intens +
+                                            [mod_seq, 'No valid tryptic position',
+                                             f"UniMod:{uni_num}", 'NA', 'NA'])
+                # ---- non-PTM case -------------------------------------------
+                else:
+                    matches = list(re.finditer(re.escape(stripped), protein_seq)) if stripped != 'NA' else []
+                    valid = False
+                    for m in matches:
+                        start = m.start()
+                        if apply_tryptic and start > 0 and protein_seq[start - 1] not in 'KR':
+                            continue
+                        valid = True
+                        pep_start = start + 1
+                        pep_end   = start + len(stripped) if stripped != 'NA' else 'NA'
+                        ptm_rows.append([prot, stripped] + intens +
+                                        [mod_seq, 'NA', 'NA', pep_start, pep_end])
+                    if not valid:
+                        ptm_rows.append([prot, stripped] + intens +
+                                        [mod_seq, 'No valid tryptic position',
+                                         'NA', 'NA', 'NA'])
+
+            # ---- column header (exact match with the rows) -------------
+            cols = (['Protein.Group', 'Stripped.Sequence'] +
+                    conditions +
+                    ['Modified.Sequence', 'PTM_position', 'UniMod_Type',
+                     'Peptide_Start', 'Peptide_End'])
+
+            ptm_df = pd.DataFrame(ptm_rows, columns=cols)
+            zipf.writestr(f"{protein_of_interest}_modification_positions.csv",
+                          ptm_df.to_csv(index=False).encode())
+
+        # ------------------------------------------------------------------
+        # 5. Colour-bar PNG
+        # ------------------------------------------------------------------
+        vmin = min(min_max_logs[c][0] for c in conditions)
+        vmax = max(min_max_logs[c][1] for c in conditions)
+        fig, ax = plt.subplots(figsize=(8, 0.3))
+        norm = Normalize(vmin=vmin, vmax=vmax)
+        ScalarMappable(cmap=colormaps[cmap_name], norm=norm)
+        cbar = fig.colorbar(
+            ScalarMappable(cmap=colormaps[cmap_name], norm=norm),
+            cax=ax, orientation='horizontal')
+        cbar.set_label('Frequency-Z' if st.session_state.is_frequency else 'Z-Score Intensity',
+                       fontsize=10)
+        cbar.ax.tick_params(labelsize=9)
+        plt.tight_layout()
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png', dpi=300, bbox_inches='tight')
+        zipf.writestr(f"{protein_of_interest}_colorbar.png", buf.getvalue())
+        plt.close(fig)
+
+        # ------------------------------------------------------------------
+        # 6. DisProt JSON + sequence TXT
+        # ------------------------------------------------------------------
+        base_id = protein_of_interest.split('-')[0]
+        zipf.writestr(f"{protein_of_interest}_disprot_info.json",
+                      json.dumps(get_disprot_info(base_id), indent=2).encode())
+        if protein_seq:
+            zipf.writestr(f"{protein_of_interest}_sequence.txt", protein_seq)
+
+        # ------------------------------------------------------------------
+        # 7. Example quantitative plots (intensity + frequency)
+        # ------------------------------------------------------------------
+        if selected_df is not None and metadata is not None:
+            # pick the first non-NA stripped peptide as an example
+            example_pep = selected_df['Stripped.Sequence'].dropna().iloc[0] if not selected_df.empty else None
+            if example_pep:
+                # ---- sample → group map (already built above) ------------
+                sample_to_group = dict(zip(metadata['File_Name'], metadata['Group']))
+
+                # ---- intensity box-plot (log10) -------------------------
+                plot_rows = []
+                for sample_col in sample_to_group.keys():
+                    if sample_col not in selected_df.columns:
+                        continue
+                    vals = selected_df.loc[selected_df['Stripped.Sequence'] == example_pep, sample_col]
+                    for v in vals.dropna():
+                        plot_rows.append([example_pep, sample_to_group[sample_col], sample_col, v])
+                if plot_rows:
+                    df_int = pd.DataFrame(plot_rows,
+                                          columns=['Peptide', 'Group', 'Sample', 'Intensity'])
+                    df_int = df_int.groupby(['Peptide', 'Group', 'Sample'], as_index=False)['Intensity'].mean()
+                    df_int['Intensity'] = np.log10(df_int['Intensity'] + 1)
+
+                    fig, ax = plt.subplots(figsize=(8, 6))
+                    sns.boxplot(data=df_int, x='Group', y='Intensity', hue='Group', ax=ax,
+                                palette='tab10')
+                    ax.set_title(f'Example intensity – {example_pep}')
+                    ax.set_ylabel('log10(Intensity+1)')
+                    buf = io.BytesIO()
+                    plt.savefig(buf, format='png', dpi=300, bbox_inches='tight')
+                    zipf.writestr(f"{protein_of_interest}_example_intensity.png", buf.getvalue())
+                    plt.close(fig)
+
+                # ---- frequency bar-plot ---------------------------------
+                freq_rows = []
+                for grp in conditions:
+                    samples = [s for s in sample_to_group.keys()
+                               if sample_to_group.get(s) == grp and s in selected_df.columns]
+                    if not samples:
+                        freq_rows.append([grp, np.nan])
+                        continue
+                    detected = sum((selected_df.loc[
+                        selected_df['Stripped.Sequence'] == example_pep, s] > 0).any()
+                                   for s in samples)
+                    freq = detected / len(samples)
+                    freq_rows.append([grp, freq])
+                if freq_rows:
+                    df_freq = pd.DataFrame(freq_rows, columns=['Group', 'Frequency'])
+                    fig, ax = plt.subplots(figsize=(8, 6))
+                    sns.barplot(data=df_freq, x='Group', y='Frequency',hue='Group', ax=ax, palette='tab10')
+                    ax.set_title(f'Example frequency – {example_pep}')
+                    ax.set_ylim(0, 1)
+                    buf = io.BytesIO()
+                    plt.savefig(buf, format='png', dpi=300, bbox_inches='tight')
+                    zipf.writestr(f"{protein_of_interest}_example_frequency.png", buf.getvalue())
+                    plt.close(fig)
+
+    zip_buffer.seek(0)
+    return zip_buffer
+  
+def render_single_3d_viewer(
+    pdb_str,
+    residue_vals,
+    title,
+    cmap_name_q='autumn',
+    not_mapped_color='#d3d3d3',
+    ptm_data=None,
+    bg_color='black'
+):
+    """
+    Single 3D viewer with:
+    - Z-score / frequency coloring
+    - PTM spheres with UniMod numbers
+    - Click → highlights residue in linear plot (and vice versa via JS listener)
+    - Same look as your multi-viewer version
+    """
+    # === 1. Compute colors with proper vmin/vmax ===
+    if st.session_state.get("is_frequency", False):
+        vals = [v for v in residue_vals if v is not None]
+        vmin = min(vals) if vals else 0
+        vmax = max(vals) if vals else 1
+        margin = max(0.01, (vmax - vmin) * 0.05)
+        vmin -= margin
+        vmax += margin
+    else:
+        vmin, vmax = -3, 3
+
+    hex_colors, _, _ = generate_colormap(
+        residue_vals, cmap_name_q, not_mapped_color, vmin=vmin, vmax=vmax
+    )
+
+    # === 2. Create viewer ===
+    view = py3Dmol.view(width=1000, height=600)
+
+    view.addModel(pdb_str, "pdb")
+    view.setStyle({"cartoon": {"color": "lightgray"}})
+
+    # Apply per-residue coloring
+    for i, color in enumerate(hex_colors):
+        view.setStyle({"resi": str(i + 1)}, {"cartoon": {"color": color}})
+
+    # === 3. Extract CA coordinates for fallback PTM placement ===
+    coords_map = {}
+    try:
+        parser = PDBParser(QUIET=True)
+        struct = parser.get_structure("tmp", io.StringIO(pdb_str))
+        for model in struct:
+            for chain in model:
+                for res in chain:
+                    if "CA" in res:
+                        idx = res.id[1] - 1
+                        ca = res["CA"].coord
+                        coords_map[idx] = (float(ca[0]), float(ca[1]), float(ca[2]))
+    except:
+        pass  # fallback 
+
+    # === 4. Add PTM spheres (same logic as multi-viewer) ===
+    if ptm_data:
+        for unimod, info in ptm_data.items():
+            positions = info.get("positions", []) if isinstance(info, dict) else info
+            color = info.get("color", "#FF0000") if isinstance(info, dict) else "#FF0000"
+            num_match = re.search(r"\d+", str(unimod))
+            label = num_match.group() if num_match else "?"
+
+            for pos0 in positions:
+                resi_str = str(int(pos0) + 1)
+                try:
+                    # Try selector first
+                    view.addSphere({
+                        "center": {"resi": resi_str, "atom": "CA"},
+                        "radius": 2.2,
+                        "color": color,
+                        "alpha": 0.95
+                    })
+                    view.addLabel(label, {
+                        "fontSize": 14,
+                        "fontColor": "white",
+                        "backgroundColor": color,
+                        "backgroundOpacity": 0.9
+                    }, {"resi": resi_str})
+                except:
+                    # Fallback to coordinates
+                    if pos0 in coords_map:
+                        x, y, z = coords_map[pos0]
+                        view.addSphere({
+                            "center": {"x": x, "y": y, "z": z},
+                            "radius": 2.5,
+                            "color": color,
+                            "alpha": 0.98
+                        })
+                        view.addLabel(label, {
+                            "fontSize": 15,
+                            "fontColor": "white",
+                            "backgroundColor": color,
+                            "backgroundOpacity": 0.9
+                        }, {"position": {"x": x, "y": y, "z": z}})
+
+    # === 5. Final style & zoom ===
+    bg_hex = "#000000" if "black" in bg_color.lower() else "#FFFFFF"
+    view.setBackgroundColor(bg_hex)
+    view.zoomTo()
+    view.zoom(1.4)
+
+    # === 6. Enable clicking → send message to linear plot ===
+    clickable_residues = json.dumps([i for i, v in enumerate(residue_vals) if v is not None])
+
+    click_js = f"""
+    <script>
+    document.addEventListener("DOMContentLoaded", function() {{
+        function initViewer() {{
+            const container = document.querySelector('.viewer_3Dmoljs');
+            if (!container || !container.viewer) {{
+                setTimeout(initViewer, 300);
+                return;
+            }}
+            const viewer = container.viewer;
+            const residues = {clickable_residues};
+
+            viewer.setClickable({{}}, true, function(atom) {{
+                if (!atom) return;
+                const resi = parseInt(atom.resi, 10) - 1;
+                if (residues.includes(resi)) {{
+                    window.parent.postMessage({{ type: 'SELECT_RESIDUE', residue: resi }}, '*');
+                }}
+            }});
+        }}
+        initViewer();
+    }});
+    </script>
+    """
+
+    # === 7. Render ===
+    st.markdown(f"#### {title}")
+    html_content = view._make_html() + click_js
+    st.components.v1.html(html_content, height=650)
+
+    # Listener (same for all single viewers — only one needed per page)
+    if not hasattr(st.session_state, "single_viewer_listener_added"):
+        st.session_state.single_viewer_listener_added = True
+        st.components.v1.html("""
+        <script>
+        let previous_selected = null;
+        window.addEventListener("message", (event) => {
+            if (event.data && event.data.type === "SELECT_RESIDUE") {
+                const residue = event.data.residue;
+
+                // Clear previous
+                if (previous_selected !== null) {
+                    const prev_span = document.querySelector(`.aa[data-pos="${previous_selected}"]`);
+                    if (prev_span) {
+                        prev_span.style.backgroundColor = "";
+                        prev_span.style.fontWeight = "";
+                    }
+                    document.querySelectorAll(`rect[data-pos="${previous_selected}"]`)
+                        .forEach(r => { r.style.stroke = ""; r.style.strokeWidth = ""; });
+                }
+
+                // Highlight new
+                const span = document.querySelector(`.aa[data-pos="${residue}"]`);
+                if (span) {
+                    span.style.backgroundColor = "yellow";
+                    span.style.fontWeight = "bold";
+                }
+                document.querySelectorAll(`rect[data-pos="${residue}"]`)
+                    .forEach(r => { r.style.stroke = "red"; r.style.strokeWidth = "3"; });
+
+                previous_selected = residue;
+            }
+        });
+        </script>
+        """, height=0)
+def render_zscore_colorbar(residue_vals,cmap_name="autumn",not_mapped_color='#d3d3d3'):
+    """
+    Beautiful fixed Z-score colorbar (-3 to +3) with integer ticks.
+    Matches perfectly with render_linear_plot() and 3D viewer.
+    Used for single-condition intensity analysis.
+    """
+    vmin, vmax = -3.0, 3.0
+
+    fig = plt.figure(figsize=(8, 0.8))
+    fig.patch.set_facecolor("#dfdfdf")
+    ax = fig.add_axes([0.5, 0.8, 0.8, 0.5])  # [left, bottom, width, height]
+    ax.set_facecolor('#0e1117')
+
+    cmap = colormaps[cmap_name]
+    norm = Normalize(vmin=vmin, vmax=vmax)
+    sm = ScalarMappable(cmap=cmap, norm=norm)
+    sm.set_array([])
+
+    cbar = fig.colorbar(sm, cax=ax, orientation='horizontal', ticks=[-3, -2, -1, 0, 1, 2, 3])
+
+    # Styling
+    cbar.set_label("Z-score Intensity", fontsize=15, fontweight='bold', color='white', labelpad=12)
+    cbar.ax.tick_params(labelsize=12, colors='white', length=6, width=1.5)
+    cbar.outline.set_edgecolor('white')
+    cbar.outline.set_linewidth(1.5)
+
+    # Bold zero tick
+    cbar.ax.set_xticklabels(['-3', '-2', '-1', '0', '1', '2', '3'],
+                             fontweight='bold', fontsize=12)
+
+    ax.axis('off')
+    st.pyplot(fig, use_container_width=True)
+    plt.close(fig)
+def extract_ptm_positions(stripped_seq, mod_seq):
+    """
+    Extract residue indices (0-based) of UniMod modifications within Modified.Sequence.
+    Example: ACDEFGHIK -> ACDE(UniMod:21)FGHIK
+    """
+    positions = []
+    seq_idx = 0
+    i = 0
+    while i < len(mod_seq):
+        if mod_seq[i].isalpha():
+            seq_idx += 1
+            i += 1
+        elif mod_seq[i] == '(':
+            match = re.match(r'\(UniMod:(\d+)\)', mod_seq[i:])
+            if match:
+                unimod_id = match.group(1)
+                positions.append((seq_idx - 1, f"UniMod:{unimod_id}"))
+                i += len(match.group(0))
+            else:
+                i += 1
+        else:
+            i += 1
+    return positions
+import re
+
+def find_peptide_position(protein_seq: str, peptide: str) -> str:
+    """
+    Return 'start-end' (1-based) or '-'.
+    Handles:
+      • Stripped peptides (plain AA)
+      • Modified peptides with UniMod tags, e.g. 'AC(UniMod:1)DEF'
+      • Lower-case modified letters (c, m, etc.)
+    """
+    # Normalise the peptide for searching
+    # Remove the UniMod tag but KEEP the surrounding parentheses and the letter
+    #   'AC(UniMod:1)DEF'  →  'AC()DEF'
+    pep_no_tag = re.sub(r"UniMod:\d+", "", peptide)
+    # Keep ONLY letters (A-Z, a-z) – this preserves lower-case modifications
+    pep_clean = "".join(c for c in pep_no_tag if c.isalpha())
+    if not pep_clean:
+        return "-"
+    # Normalise the protein sequence (upper-case, no gaps)
+    prot_clean = "".join(c for c in protein_seq if c.isalpha()).upper()
+    # Search – we look for the *exact* cleaned peptide (case-insensitive)
+    pep_upper = pep_clean.upper()
+    start = prot_clean.find(pep_upper)
+    if start == -1:
+        return "-"
+    # 1-based positions
+    start1 = start + 1
+    end1   = start + len(pep_clean)
+    return f"{start1}-{end1}"
+
+def format_sequence_for_display(seq, residue_data, conditions, line_len=80, group=20):
+    mapped_positions = set()
+    for cond in conditions:
+        mapped_positions.update(i for i, v in enumerate(residue_data[cond]) if v is not None)
+    mapped_js = json.dumps(list(mapped_positions))
+    lines = []
+    seq_len = len(seq)
+    # Render in fixed-width monospace using inline-block spans so numbering aligns exactly with residues.
+    for start in range(0, seq_len, line_len):
+        end = min(start + line_len, seq_len)
+        segment = seq[start:end]
+        # Number line: create blocks of width 'group' chars; place the group-start number at the left of each block
+        num_line = "<div style='font-family: monospace; font-size: 10px; color: #888; display: block; margin-bottom:4px;'>"
+        for i in range(0, len(segment), group):
+            block_start = start + i + 1
+            # width equals number of residues in this block
+            block_size = min(group, len(segment) - i)
+            # display the number at the start of the block and draw a small vertical tick under the number
+            num_line += (
+                f"<span style='display:inline-block; width:{block_size}ch; text-align:left; position:relative;'>"
+                f"<span style='position:relative; display:inline-block;'>{block_start}</span>"
+                f"<span style='position:absolute; left:0; top:100%; width:1px; height:8px; background:#888;'></span>"
+                f"</span>"
+            )
+        num_line += "</div>"
+
+        # Sequence line: each residue is a fixed-width inline-block so it lines up with the numbering above
+        seq_line = "<div style='font-family: monospace; font-size: 12px; line-height: 1.5; display:block; position:relative;'>"
+        for j, aa in enumerate(segment):
+            abs_pos = start + j + 1
+            style = "cursor:pointer;color:blue;" if abs_pos in mapped_positions else "color:gray;"
+            seq_line += f"<span class='aa' data-pos='{abs_pos}' style='display:inline-block; width:1ch; {style}'>{aa}</span>"
+        # place the end index at the right of the line so it's clearly aligned with the last residue
+        seq_line += f"<span style='position:absolute; right:6px; top:0; font-weight:bold;'>{end}</span></div>"
+
+        lines.append(num_line + seq_line)
+    seq_html = "<div id='seq-panel' style='padding:10px; background:#fafafa; border-radius:6px; border:1px solid #ddd; white-space:nowrap; overflow:auto;'>" + "".join(lines) + "</div>"
+    js = f"""
+    <script>
+    const mapped = {mapped_js};
+    document.querySelectorAll('.aa').forEach(el => {{
+        const pos = parseInt(el.getAttribute('data-pos'));
+        if (mapped.includes(pos)) {{
+            el.style.cursor = 'pointer';
+            el.addEventListener('click', e => {{
+                window.parent.postMessage({{ type: 'SELECT_RESIDUE', residue: pos }}, '*');
+                console.log("Sequence click sent for pos:", pos);
+            }});
+        }}
+    }});
+    </script>
+    """
+    return seq_html + js
+
+def sequence_copy_component(seq):
+    seq_escaped = seq.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    html = f"""
+    <div style="display:flex; gap:10px; align-items:center;">
+      <button id="copySeqBtn" style="padding:6px 10px; background:#2b8cff; color:white; border-radius:6px; border:none; cursor:pointer;">Copy sequence</button>
+      <span id="copyMsg" style="color:green; font-size:13px; display:none;">Copied!</span>
+    </div>
+    <pre id="seqText" style="display:none;">{seq_escaped}</pre>
+    <script>
+      const btn = document.getElementById('copySeqBtn');
+      const msg = document.getElementById('copyMsg');
+      btn.addEventListener('click', () => {{
+        const text = document.getElementById('seqText').innerText;
+        navigator.clipboard.writeText(text).then(() => {{
+          msg.style.display = 'inline';
+          setTimeout(() => msg.style.display = 'none', 1500);
+        }});
+      }});
+    </script>
+    """
+    return html
+
+# --- Main App UI ---
+
+st.markdown(
+    """
+    <style>
+    .title-container {
+        position: relative;
+        text-align: center;
+        margin: 60px 0 40px;
+        height: 180px;
+        perspective: 1000px;
+        overflow: hidden;
+    }
+
+    /* Disable all clicks, pointers, and selection on the entire title area */
+    .title-container,
+    .title-container h1,
+    .title-container h1 * {
+        pointer-events: none !important;
+        cursor: default !important;
+        user-select: none !important;
+    }
+
+    .FLEXIfold-title {
+        font-family: 'Arial Black', 'Helvetica Neue', sans-serif;
+        font-size: 5.6rem;           /* Slightly larger since no "3D" */
+        font-weight: 900;
+        background: linear-gradient(90deg, #00C9FF, #A78BFA, #2DD4BF);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+        text-shadow: 0 0 20px rgba(0, 201, 255, 0.6);
+        animation: softGlow 5s ease-in-out infinite;
+        display: inline-block;
+        letter-spacing: -2px;
+    }
+
+    @keyframes softGlow {
+        0%, 100%   { opacity: 0.92; filter: brightness(1.05); }
+        50%        { opacity: 1.00; filter: brightness(1.45); }
+    }
+    </style>
+
+    <div class="title-container">
+        <h1>
+            <span class="FLEXIfold-title">FLEXIfold</span>
+        </h1>
+        <p style="text-align:center; color:#B3E5FC; font-size:1.25rem; margin-top:9px; font-weight:300;">
+            Bridging Quantitative Proteomics with 3D Protein Structures
+        </p>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
+
+# ----------------------------------------------------------------------
+# Main tabs (Qualitative vs Quantitative)
+# ----------------------------------------------------------------------
+main_tab = st.tabs(["Qualitative Analysis", "Quantitative Analysis"])
+
+# Determine which main tab is active
+if main_tab[0].is_selected:
+    st.session_state.main_tab = "Qualitative Analysis"
+elif main_tab[1].is_selected:
+    st.session_state.main_tab = "Quantitative Analysis"
+# ----------------------------------------------------------------------
+# QUALITATIVE ANALYSIS
+# ----------------------------------------------------------------------
+with main_tab[0]:
+    # ----- description (always visible) -----
+    st.markdown(
+        """
+        <p style='text-align:center; font-size:16px; color:#87CEbB;'>
+        The Qualitative Analysis tab allows users to visualize peptide intensity data on 3D protein structures, 
+        focusing on the presence and locations of post-translational modifications (PTMs). 
+        Users can upload peptide CSV and FASTA files, select proteins of interest, and customize PTM annotations. 
+        The tool fetches AlphaFold structures or accepts user-uploaded PDB files, providing interactive 3D and 
+        linear sequence views for detailed exploration of residue-level modifications.
+        </p>
+        """,
+        unsafe_allow_html=True,
+    )
+    # ----- sub-tabs inside Qualitative -----
+    st.session_state.qual_sub_tab = "Single Condition"
+    st.subheader("Single Condition")
+    st.markdown(
+        """ <p style='text-align:center; font-size:18px; color:#B3E5FC;'>
+        Visualize peptide intensities and PTMs on interactive 3D protein structures and linear sequence views.
+        </p> 
+        """,
+        unsafe_allow_html=True,
+    )
+    st.write("Upload peptide and FASTA files for a single condition.")
+
+    csv_file = st.file_uploader("Peptide CSV (Single Condition)", type="csv", key="qual_csv")
+    fasta_file = st.file_uploader("FASTA File", type="fasta", key="qual_fasta")
+
+    if csv_file and fasta_file:
+        df = pd.read_csv(csv_file)
+        fasta_str = fasta_file.getvalue().decode("utf-8")
+        records = list(SeqIO.parse(io.StringIO(fasta_str), "fasta"))
+
+        # Detect intensity column
+        num_cols = [c for c in df.columns if df[c].dtype in ['float64', 'int64'] and c not in ['Protein.Group', 'Stripped.Sequence']]
+        if not num_cols:
+            st.error("No numeric intensity columns found in CSV.")
+            st.stop()
+
+        intensity_col = st.selectbox("Select Intensity Column (Condition Name)", num_cols, key="qual_intensity_col")
+
+        proteins = sorted(df['Protein.Group'].dropna().unique())
+        st.session_state.global_protein_options = proteins
+        if not proteins:
+            st.error("No proteins found in the uploaded file.")
+            st.stop()
+        selected_protein = st.selectbox(
+            "Protein of Interest",
+            proteins,
+            index=proteins.index(st.session_state.selected_protein_global)
+                if st.session_state.selected_protein_global in proteins else 0,
+            key="selected_protein_global"
+        )
+
+        combine_isoforms = st.session_state.combine_isoforms
+        overlap_strategy = st.session_state.overlap_strategy
+
+        # Force Z-score style (beautiful!)
+        st.session_state.is_frequency = False
+
+        if st.button("Process Protein", key="process_protein_1", use_container_width=True):
+            with st.spinner("Processing protein..."):
+                base_id = selected_protein.split("-")[0]
+                protein_seq = next((str(r.seq) for r in records if base_id in r.id), str(records[0].seq))
+                seq_len = len(protein_seq)
+
+                selected_df = df[df['Protein.Group'] == selected_protein]
+                ptm_col = 'Modified.Sequence' if st.session_state.ptm_enabled and 'Modified.Sequence' in df.columns else None
+
+                residue_vals, ptm_dict = map_peptides_to_residues(
+                    selected_df, protein_seq, intensity_col,
+                    overlap_strategy=overlap_strategy,
+                    ptm_col=ptm_col,
+                    apply_tryptic=st.session_state.apply_tryptic
+                )
+
+                # === Build PTM data ===
+                final_ptm = {}
+                if st.session_state.ptm_enabled and ptm_dict:
+                    selected_unimods = [um for um in st.session_state.selected_unimods if um in ptm_dict]
+                    for um in selected_unimods:
+                        positions = ptm_dict[um]
+                        config = st.session_state.ptm_configs.get(um, {})
+                        final_ptm[um] = {
+                            "positions": positions,
+                            "color": config.get("color", "#3700FF"),
+                            "label": config.get("label", um),
+                            "selected": config.get("selected", True),
+                        }
+                    if not final_ptm:
+                        st.info("No selected UniMod IDs were found in this protein/peptide set.")
+                else:
+                    final_ptm = None
+
+                # === Load PDB ===
+                if st.session_state.pdb_source == "AlphaFold":
+                    pdb_url = f"https://alphafold.ebi.ac.uk/files/AF-{base_id}-F1-model_v6.pdb"
+                    try:
+                        pdb_str = requests.get(pdb_url, timeout=30).text
+                    except:
+                        st.error("Failed to download AlphaFold structure.")
+                        st.stop()
+                else:
+                    if not st.session_state.uploaded_pdb:
+                        st.error("Please upload a PDB file.")
+                        st.stop()
+                    pdb_str = st.session_state.uploaded_pdb.getvalue().decode()
+
+                plddt_list, _, mean_plddt = extract_plddt_and_model(pdb_str, protein_seq)
+
+                st.success(f"Loaded **{base_id}** • Sequence length: {seq_len} • Mean pLDDT: **{mean_plddt:.1f}**")
+
+                # === External Links ===
+                st.markdown("### External Resources")
+                col1, col2, col3,col4 = st.columns(4)
+                with col1:
+                    st.markdown(f"[AlphaFold DB](https://alphafold.ebi.ac.uk/entry/{base_id})")
+                with col2:
+                    st.markdown(f"[UniProt](https://www.uniprot.org/uniprotkb/{base_id}/entry)")
+                with col3:
+                    st.markdown(f"[PeptideAtlas](https://db.systemsbiology.net/sbeams/cgi/PeptideAtlas/GetProtein?protein_name={base_id})")
+                with col4:
+                    st.markdown(f"[ESM Metagenomic Atlas](https://esmatlas.com/resources?action=fold&id={base_id})",
+                                unsafe_allow_html=True
+                    )
+                # === 3D Viewer ===
+                st.subheader("3D Structure Visualization")
+                render_single_3d_viewer(
+                    pdb_str,
+                    residue_vals,
+                    intensity_col,
+                    "autumn",
+                    "#A7A5A5",
+                    final_ptm
+                )
+
+                # === Linear Plot — Beautiful Z-score Style ===
+                st.subheader("Linear Sequence Visualization")
+                render_linear_plot(
+                    residue_vals=residue_vals,
+                    title=intensity_col,                    # ← THIS IS THE CONDITION NAME!
+                    seq_len=seq_len,
+                    vmin=-3,
+                    vmax=3,
+                    protein_seq=protein_seq,
+                    model_name=intensity_col,
+                    plddt_list=plddt_list,
+                    mean_plddt=mean_plddt,
+                    cmap_name="autumn",                     # For intensity
+                    not_mapped_color="#A7A5A5",
+                    ptm_data=final_ptm
+                )
+
+                # Optional colorbar
+                st.markdown("<br>", unsafe_allow_html=True)
+
+# ----------------------------------------------------------------------
+# QUANTITATIVE ANALYSIS
+# ----------------------------------------------------------------------
+with main_tab[1]:
+    # ----- description (always visible) -----
+    st.markdown(
+        """
+        <p style='text-align:center; font-size:16px; color:#87CEbB;'>
+        The Quantitative Analysis tab enables users to compare peptide intensity data between two conditions 
+        (e.g., control vs. disease) on 3D protein structures. Users can upload peptide CSV and FASTA files, 
+        define experimental conditions, and apply tryptic cleavage rules. The tool visualizes intensity 
+        differences using z-score scales, highlights PTMs, and provides interactive 3D and linear sequence 
+        views for in-depth analysis of residue-level changes between conditions.
+        </p>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # ----- sub-tabs inside Quantitative -----
+    quant_single_tab, quant_multi_tab,quant_diff_tab = st.tabs(["Single Condition", "Multiple Conditions","Differential Analysis"])
+
+    # ----- SINGLE CONDITION (Quantitative) -----
+    with quant_single_tab:
+        st.session_state.active_quant_tab = "single"
+        # Clean multi-tab leftovers
+        st.session_state.processed_multi = {"processed": False}
+        st.subheader("Single Condition Quantitative Analysis")
+       # st.markdown(
+           # """
+           # <p style='text-align:center; font-size:18px; color:#32CD32;'>
+           # Available Now! The Single Condition Quantitative Analysis allows you to analyze peptide intensities 
+           # and visualize them on 3D structures. Upload your data and explore the features.
+           # </p>
+           # """,
+            #unsafe_allow_html=True,
+        #)
+        csv_file = st.file_uploader("Peptide CSV (Single Condition)", type="csv", key="quant_single_csv")
+        fasta_file = st.file_uploader("FASTA File", type="fasta", key="quant_single_fasta")
+
+        if csv_file and fasta_file:
+            df = pd.read_csv(csv_file)
+            fasta_str = fasta_file.getvalue().decode("utf-8")
+            records = list(SeqIO.parse(io.StringIO(fasta_str), "fasta"))
+
+            # Detect intensity column
+            num_cols = [c for c in df.columns if df[c].dtype in ['float64', 'int64'] and c not in ['Protein.Group', 'Stripped.Sequence']]
+
+            proteins = sorted(df['Protein.Group'].dropna().unique())
+            st.session_state.global_protein_options = proteins
+            if not proteins:
+                st.error("No proteins found in the uploaded file.")
+                st.stop()
+            selected_protein = st.selectbox(
+                "Protein of Interest",
+                proteins,
+                index=proteins.index(st.session_state.selected_protein_global)
+                    if st.session_state.selected_protein_global in proteins else 0,
+                key="selected_protein_global"
+            )
+            intensity_col = st.selectbox("Select Intensity Column (Condition Name)", num_cols, key="quant_intensity_col")
+            if not num_cols:
+                st.error("No numeric intensity columns found in CSV.")
+                st.stop()
+
+            combine_isoforms = st.session_state.combine_isoforms
+            overlap_strategy = st.session_state.overlap_strategy
+
+            st.session_state.is_frequency = False
+
+            if st.button("Process Protein", key="process_single_quant", use_container_width=True):
+                with st.spinner("Processing protein..."):
+                    base_id = selected_protein.split("-")[0]
+                    protein_seq = next((str(r.seq) for r in records if base_id in r.id), str(records[0].seq))
+                    seq_len = len(protein_seq)
+
+                    selected_df = df[df['Protein.Group'] == selected_protein]
+                    ptm_col = 'Modified.Sequence' if st.session_state.ptm_enabled and 'Modified.Sequence' in df.columns else None
+
+                    residue_vals, ptm_dict = map_peptides_to_residues(
+                        selected_df, protein_seq, intensity_col,
+                        overlap_strategy=overlap_strategy,
+                        ptm_col=ptm_col,
+                        apply_tryptic=st.session_state.apply_tryptic
+                    )
+                    if residue_vals is None:
+                        st.error("map_peptides_to_residues returned None → check input data / function logic")
+                        st.stop()
+
+                    # Make sure it's a list/array with numbers
+                    if not hasattr(residue_vals, '__len__') or len(residue_vals) == 0:
+                        st.warning("No residue values were mapped. Color will be uniform.")
+                        residue_vals = [0.0] * len(protein_seq)   # or whatever fallback makes sense
+                    # === Build PTM data ===
+                    final_ptm = {}
+                    if st.session_state.ptm_enabled and ptm_dict:
+                        selected_unimods = [um for um in st.session_state.selected_unimods if um in ptm_dict]
+                        for um in selected_unimods:
+                            positions = ptm_dict[um]
+                            config = st.session_state.ptm_configs.get(um, {})
+                            final_ptm[um] = {
+                                "positions": positions,
+                                "color": config.get("color", "#3700FF"),
+                                "label": config.get("label", um),
+                                "selected": config.get("selected", True),
+                            }
+                        if not final_ptm:
+                            st.info("No selected UniMod IDs were found in this protein/peptide set.")
+                    else:
+                        final_ptm = None
+
+                    # === Load PDB ===
+                    if st.session_state.pdb_source == "AlphaFold":
+                        pdb_url = f"https://alphafold.ebi.ac.uk/files/AF-{base_id}-F1-model_v6.pdb"
+                        try:
+                            pdb_str = requests.get(pdb_url, timeout=30).text
+                        except:
+                            st.error("Failed to download AlphaFold structure.")
+                            st.stop()
+                    else:
+                        if not st.session_state.uploaded_pdb:
+                            st.error("Please upload a PDB file.")
+                            st.stop()
+                        pdb_str = st.session_state.uploaded_pdb.getvalue().decode()
+
+                    plddt_list, _, mean_plddt = extract_plddt_and_model(pdb_str, protein_seq)
+
+                    st.success(f"Loaded **{base_id}** • Sequence length: {seq_len} • Mean pLDDT: **{mean_plddt:.1f}**")
+
+                    # === External Links ===
+                    st.markdown("### External Resources")
+                    col1, col2, col3,col4 = st.columns(4)
+                    with col1:
+                        st.markdown(f"[AlphaFold DB](https://alphafold.ebi.ac.uk/entry/{base_id})")
+                    with col2:
+                        st.markdown(f"[UniProt](https://www.uniprot.org/uniprotkb/{base_id}/entry)")
+                    with col3:
+                        st.markdown(f"[PeptideAtlas](https://db.systemsbiology.net/sbeams/cgi/PeptideAtlas/GetProtein?protein_name={base_id})")
+                    with col4:
+                        st.markdown(f"[ESM Metagenomic Atlas](https://esmatlas.com/resources?action=fold&id={base_id})",
+                                unsafe_allow_html=True
+                    )
+                
+                st.session_state.processed_single = {
+                    "selected_df": selected_df,
+                    "protein_seq": protein_seq,
+                    "intensity_col": intensity_col,
+                    "base_id": base_id,
+                    "residue_vals": residue_vals,
+                    "ptm_dict": final_ptm,
+                    "pdb_str": pdb_str,
+                    "plddt_list": plddt_list,
+                    "mean_plddt": mean_plddt,
+                    "processed": True
+                }
+                    # === 3D Viewer ===
+                st.subheader("3D Structure Visualization")
+                render_single_3d_viewer(
+                        pdb_str,
+                        residue_vals,
+                        intensity_col,
+                        "autumn",
+                        "#A7A5A5",
+                        final_ptm
+                    )
+
+                # === Linear Plot —  Z-score Style ===
+                st.subheader("Linear Sequence Visualization")
+                render_linear_plot(
+                        residue_vals=residue_vals,
+                        title=intensity_col,                    # ← THIS IS THE CONDITION NAME!
+                        seq_len=seq_len,
+                        vmin=-3,
+                        vmax=3,
+                        protein_seq=protein_seq,
+                        model_name=intensity_col,
+                        plddt_list=plddt_list,
+                        mean_plddt=mean_plddt,
+                        cmap_name="autumn",                   
+                        not_mapped_color="#A7A5A5",
+                        ptm_data=final_ptm
+                )
+
+                if (st.session_state.get("processed_single", {}).get("processed", False) and
+                    st.session_state.active_quant_tab == "single"):
+
+                    data = st.session_state.processed_single
+                    base_id       = data.get("base_id")
+                    intensity_col = data.get("intensity_col")
+                    residue_vals  = data.get("residue_vals")
+
+                    st.markdown(f"**Protein:** `{base_id}` | **Intensity column:** `{intensity_col}`")
+
+                    if residue_vals is None or not hasattr(residue_vals, '__iter__'):
+                        st.info("No processed intensity data yet. Using default color scale.")
+                        vmin, vmax = -3.0, 3.0
+
+                    else:
+                        valid_vals = [
+                            v for v in residue_vals
+                            if v is not None and isinstance(v, (int, float))
+                        ]
+
+                        if valid_vals:
+                            vmin = min(valid_vals)
+                            vmax = max(valid_vals)
+                        else:
+                            st.warning("No valid (non-None) intensity values were mapped.")
+                            vmin, vmax = -3.0, 3.0
+
+                    # ─────────────────────────────────────────────
+                    #   Z-score Colorbar
+                    # ─────────────────────────────────────────────
+                    st.subheader("Z-score Colorbar")
+
+                    fig, ax = plt.subplots(figsize=(8, 0.35))
+                    norm = Normalize(vmin=vmin, vmax=vmax)
+                    sm = ScalarMappable(cmap="autumn", norm=norm)
+                    cbar = fig.colorbar(sm, cax=ax, orientation='horizontal')
+                    cbar.set_label('Z-Score Intensity', fontsize=10)
+                    cbar.ax.tick_params(labelsize=9)
+
+                    plt.tight_layout()
+                    buf = io.BytesIO()
+                    plt.savefig(buf, format='png', bbox_inches='tight', dpi=220, transparent=False)
+                    buf.seek(0)
+                    img_str = base64.b64encode(buf.getvalue()).decode('utf-8')
+                    plt.close(fig)
+
+                    html_content = f"""
+                    <div style="display: flex; justify-content: center; width: 100%; max-width: 620px; margin: 12px auto;">
+                        <img src="data:image/png;base64,{img_str}" style="width: 100%; max-width: 520px; height: auto; border: 1px solid #e0e0e0; border-radius: 6px;">
+                    </div>
+                    """
+                    st.components.v1.html(html_content, height=90, scrolling=False)
+          
+    # ----- MULTIPLE CONDITIONS (Quantitative) – ONLY HERE we show uploads -----
+    with quant_multi_tab:
+            st.session_state.active_quant_tab = "multi"
+            st.session_state.processed_single = {"processed": False}
+            st.subheader("Multiple Conditions Quantitative Analysis")
+            #st.markdown(
+            # """
+            # <p style='text-align:center; font-size:18px; color:#32CD32;'>
+            # Available Now! The Multiple Conditions Quantitative Analysis is ready with exciting features 
+            # to compare peptide intensity data on 3D protein structures.
+            # </p>
+            # """,
+            # unsafe_allow_html=True,
+            #)
+            for k, v in {
+                "step1_done": False,
+                "step2_done": False,
+                "step3_done": False,
+                "step4_done": False,
+                "step5_done": False,
+                "step6_done": False,
+                "selected_conditions": [],
+                "conditions_confirmed": False,
+                "processed": False,
+                "ptm_enabled": False,
+                "apply_tryptic": False,
+                "ptm_configs": {},
+                "pdb_source": 'AlphaFold',
+                "uploaded_pdb": None,
+                "base_id": None,
+                "protein_seq": None,
+                "seq_len": None,
+                "seq_records": None,
+                "matched_fasta_header": None,
+                "residue_data":    {},
+                "ptm_data":        {},
+                "pdb_str":         None,
+                "bg_color":        "black",
+                "selected_cmap":   "autumn",
+                "not_mapped_color": "#d3d3d3",
+                "min_max_logs":    {},
+                "conditions":      [],
+                "peptide_data":    {},
+                "plddt_list":      [],
+                "model_name":      None,
+                "mean_plddt":      None,
+                "selected_df": None,
+                "selected_protein": None,
+                "combine_isoforms": "yes",
+                "overlap_strategy": "none",
+                "has_ptm": False,
+                "intensity_cols": [],
+                "is_frequency": False,
+                "proteotypic_only": True,
+                "selected_unimods": [],
+                "all_unimods": [],
+                "view_mode": "Full Structure (All Peptides)",
+                "selected_peptide": None,
+            
+            }.items():
+                if k not in st.session_state:
+                    st.session_state[k] = v
+            with st.expander("Upload Files", expanded=not st.session_state.step1_done):
+                csv_file_q = st.file_uploader("Upload Peptide Intensity CSV (e.g., Input_Two_Condition.csv)", type=["csv"],key="quant_multi_csv")
+                fasta_file_q = st.file_uploader("Upload FASTA", type=["fasta"],key="quant_multi_fasta")
+                metadata_file = st.file_uploader("Upload Metadata CSV (File_Name, Group, Sample_Name)", type=["csv"],key="quant_multi_metadata")
+
+                if csv_file_q and fasta_file_q and metadata_file:
+                    # Read files
+                    try:
+                        df = pd.read_csv(csv_file_q)
+                    except Exception as e:
+                        st.error(f"Error reading Peptide CSV: {e}")
+                        st.stop()
+
+                    try:
+                        metadata = pd.read_csv(metadata_file)
+                    except Exception as e:
+                        st.error(f"Error reading Metadata CSV: {e}")
+                        st.stop()
+
+                    required_meta = {"File_Name", "Group", "Sample_Name"}
+                    if not required_meta.issubset(set(metadata.columns)):
+                        st.error(f"Metadata CSV must contain columns: {required_meta}")
+                        st.stop()
+
+                    fasta_str = fasta_file_q.getvalue().decode("utf-8")
+                    fasta_handle = io.StringIO(fasta_str)
+                    seq_records = list(SeqIO.parse(fasta_handle, "fasta"))if fasta_str else []
+                    if not seq_records:
+                        st.error("No sequences found in FASTA file.")
+                        st.stop()
+                    def extract_uniprot_id(header: str) -> str:
+                        # Try to use UniProt format sp|ID|... else fallback first token
+                        parts = header.split('|')
+                        if len(parts) >= 2 and parts[0] in ('sp', 'tr'):
+                            return parts[1]
+                        return header.split()[0]
+
+                    fasta_ids = [extract_uniprot_id(rec.id) for rec in seq_records]
+                    fasta_with_isoform = len(fasta_ids)
+                    fasta_without_isoform = len(set([fid.split('-')[0] for fid in fasta_ids]))
+
+                    # Metadata: samples & groups
+                    num_samples = metadata.shape[0]
+                    num_groups = metadata['Group'].nunique()
+            
+                    # Peptide CSV: proteins with/without isoform
+                    if 'Protein.Group' not in df.columns:
+                        st.error("Peptide CSV must contain 'Protein.Group' column.")
+                        st.stop()
+                    prot_ids = df['Protein.Group'].dropna().astype(str).unique().tolist()
+                    prot_with_isoform = len(prot_ids)
+                    prot_without_isoform = len(set([p.split('-')[0] for p in prot_ids]))
+
+                    # Peptide CSV: stripped sequences
+                    if 'Stripped.Sequence' not in df.columns:
+                        st.error("Peptide CSV must contain 'Stripped.Sequence' column.")
+                        st.stop()
+                    num_peptides_raw = df['Stripped.Sequence'].notna().sum()
+                    num_peptides_unique = df['Stripped.Sequence'].dropna().nunique()
+                
+                    # PTM detection (supports either 'PTM' or 'Modified.Sequence')
+                    ptm_col_candidates = [c for c in [ 'Modified.Sequence','PTM'] if c in df.columns]
+                    ptm_detected = False
+                    unimods = ["NA"]
+                    num_modseq_raw = "NA"
+                    num_modseq_unique = "NA"
+                    if ptm_col_candidates:
+                        ptm_col_for_detection = ptm_col_candidates[0]
+                        col_series = df[ptm_col_for_detection].dropna().astype(str)
+                        ptm_detected = col_series.str.contains('UniMod:', case=False).any()
+                        if ptm_detected:
+                            all_text = ' '.join(col_series.tolist())
+                            unimods = sorted(set(re.findall(r'UniMod:\d+', all_text)))
+                            num_modseq_raw = df[ptm_col_for_detection].notna().sum()
+                            num_modseq_unique = df[ptm_col_for_detection].dropna().nunique()
+
+                    st.markdown("### 🧾 File Information Summary")
+                    st.info(
+                        f"**FASTA File**\n"
+                        f"- Total Proteins (without isoform): {fasta_without_isoform}\n"
+                        f"- Total Proteins (with isoform): {fasta_with_isoform}\n\n"
+                        f"**Metadata File**\n"
+                        f"- Samples Detected: {num_samples}\n"
+                        f"- Groups Detected: {num_groups}\n\n"
+                        f"**Peptide CSV File**\n"
+                        f"- Proteins Detected (without isoform): {prot_without_isoform}\n"
+                        f"- Proteins Detected (with isoform): {prot_with_isoform}\n"
+                        f"- Stripped Sequences: {num_peptides_raw} (Unique: {num_peptides_unique})\n"
+                        f"- PTM Detected: {'Yes' if ptm_detected else 'No'}\n"
+                        f"- PTM Types: {', '.join(unimods)}\n"
+                        f"- Modified Sequences: {num_modseq_raw} (Unique: {num_modseq_unique})"
+                    )
+                    # --------------------------------------
+                    # Identify sample intensity columns using Metadata["File_Name"]
+                    # --------------------------------------
+                    sample_candidates = metadata['File_Name'].astype(str).tolist()
+                    df_cols = set(map(str, df.columns))
+                    sample_cols = [c for c in sample_candidates if c in df_cols]
+                    if len(sample_cols) == 0:
+                        st.error("No sample columns found in the Peptide CSV that match Metadata['File_Name']. Check column names.")
+                        st.stop()
+
+                    # Map each sample to its Group
+                    meta_map = metadata.set_index('File_Name')['Group'].to_dict()
+                    groups = metadata['Group'].unique().tolist()
+                    st.session_state.df = df
+                    st.session_state.metadata = metadata
+                    st.session_state.sample_cols = sample_cols
+                    st.session_state.meta_map = meta_map
+                    st.session_state.groups = groups
+                    st.session_state.ptm_detected = ptm_detected
+                    st.session_state.unimods = unimods
+                    st.session_state.seq_records = seq_records
+                    st.session_state.global_protein_options = sorted(df['Protein.Group'].dropna().unique())
+                    if st.session_state.global_protein_options and st.session_state.selected_protein_global not in st.session_state.global_protein_options:
+                        st.session_state.selected_protein_global = st.session_state.global_protein_options[0]
+                    st.session_state.step1_done = True 
+
+            with st.expander("Data Preprocessing", expanded=st.session_state.step1_done and not st.session_state.step2_done):
+                if not st.session_state.step1_done:
+                    st.info("Upload files in the previous section to enable aggregation options.")
+                else:
+                    df         = st.session_state.df.copy()
+                    metadata   = st.session_state.metadata
+                    sample_cols = st.session_state.sample_cols
+                    meta_map   = st.session_state.meta_map
+                    groups     = st.session_state.groups
+                    ptm_detected = st.session_state.ptm_detected
+                    unimods    = st.session_state.unimods
+                    
+                    agg_choice = st.radio( "Aggregate replicates by:",["Mean", "Median","Frequency"],horizontal=True,index=0,key="agg_choice_radio")
+                    # store for later use
+                    st.session_state.is_frequency = (agg_choice == "Frequency")
+                    # Create group-intensity columns per row
+                    group_to_samples = {
+                        g: [s for s in sample_cols if meta_map.get(s, None) == g]
+                        for g in groups
+                    }
+                    empty_groups = [g for g, cols in group_to_samples.items() if len(cols) == 0]
+                    if empty_groups:
+                        st.warning(f"Groups with no matching sample columns in CSV: {empty_groups}")
+
+                    # Aggregation function
+                    def aggregate_group(df_group, samples, choice):
+                        """
+                        df_group – ONE ROW of the main DataFrame (as a DataFrame)
+                        samples  – list of column names belonging to the group
+                        choice   – "Mean" | "Median" | "Frequency"
+                        Returns a **single float** (or 0/1 for frequency)
+                        """
+                        # 1. Extract the values for the current row & the selected samples
+                        row_vals = df_group[samples].iloc[0]               # Series of length = #samples
+                        # Frequency → 0/1 detection per replicate → then aggregate
+                        if choice == "Frequency":
+                            # any non-zero / non-NA → detected
+                            detected = row_vals.gt(0) | row_vals.notna()   # True/False per replicate
+                            if choice == "Mean":
+                                return detected.mean()                    # 0.0 – 1.0
+                            else:  # Median
+                                return detected.median()                  # 0.0 or 1.0
+                        # Mean / Median of intensities
+                        # clean infinite / NaN
+                        clean = row_vals.replace([np.inf, -np.inf], np.nan).dropna()
+                        if clean.empty:
+                            return np.nan
+
+                        if choice == "Mean":
+                            return clean.mean()
+                        else:  # Median
+                            return clean.median()
+                    group_to_samples = {
+                        g: [s for s in sample_cols if meta_map.get(s, None) == g]
+                        for g in groups
+                    }
+                    for g, cols in group_to_samples.items():
+                        if not cols:                                 # safety
+                            df[g] = np.nan
+                            continue
+                        df[g] = df.apply(
+                            lambda row: aggregate_group(row.to_frame().T, cols, agg_choice),
+                            axis=1
+                        )
+                    if ptm_detected:
+                        st.session_state.all_unimods = unimods
+                    else:
+                        st.session_state.all_unimods = []
+                        st.session_state.selected_unimods = []
+
+                    if st.session_state.all_unimods and "selected_unimods" not in st.session_state:
+                        st.session_state.selected_unimods = []
+
+                    has_ptm = bool(st.session_state.all_unimods)
+                    if has_ptm:
+                        st.info("PTM annotation options are available in the sidebar once UniMod IDs are detected.")
+                    else:
+                        st.info("No PTM IDs detected yet. Upload data or check your dataset.")
+                    st.info("Peptide filtering, PTM selection, and mapping rules are managed in the sidebar.")
+                    
+                    intensity_cols = [g for g in groups if g in df.columns]
+                    if len(intensity_cols) < 2:
+                        st.error(f"At least two groups are required after aggregation. Found: {intensity_cols}")
+                        st.stop()
+                    st.session_state.df           = df          # df now has group-aggregated columns
+                    st.session_state.intensity_cols = intensity_cols
+                    st.session_state.has_ptm       = has_ptm
+                    st.session_state.global_protein_options = sorted(df['Protein.Group'].dropna().unique())
+                    if st.session_state.global_protein_options and st.session_state.selected_protein_global not in st.session_state.global_protein_options:
+                        st.session_state.selected_protein_global = st.session_state.global_protein_options[0]
+                    if st.button("Confirm Aggregation Settings", use_container_width=True, key="confirm_agg"):
+                        st.session_state.step2_done    = True
+                        st.rerun()
+
+            with st.expander("Condition/Group Selection", expanded=st.session_state.step2_done and not st.session_state.step3_done):
+                if not st.session_state.step2_done:
+                    st.info("Complete the previous step to enable condition selection.")
+                else:
+                    #df             = st.session_state.df
+                    intensity_cols = st.session_state.intensity_cols
+                    #seq_records    = st.session_state.seq_records
+                    #has_ptm        = st.session_state.has_ptm
+
+                    default_conditions = intensity_cols[:2] if len(intensity_cols) >= 2 else intensity_cols
+
+                    # Initialize before reading
+                    if "selected_conditions" not in st.session_state:
+                        st.session_state.selected_conditions = default_conditions
+
+                    selected_conditions = st.multiselect(
+                        "Select Conditions to Compare (2-4)",
+                        options=intensity_cols,
+                        default=st.session_state.selected_conditions,
+                        help="Select 2 to 4 groups/conditions for comparison.",
+                        key="selected_conditions_widget"
+                    )
+
+                    # Save immediately after widget renders
+                    st.session_state.selected_conditions = selected_conditions
+
+                    if len(selected_conditions) < 2 or len(selected_conditions) > 4:
+                        st.warning("Please select between 2 and 4 conditions.")
+                        
+                    
+                    if st.button("Confirm Conditions", use_container_width=True, key="confirm_conditions"):
+                        st.session_state.conditions_confirmed = True
+                        st.session_state.processed = False
+                        st.session_state.step3_done = True
+                        st.rerun()
+
+            with st.expander(" Protein of Interest", 
+                                expanded=st.session_state.step3_done and not st.session_state.step4_done):
+                    if not st.session_state.step3_done:
+                        st.info("Complete Step 3 first.")
+                    else:
+                        df = st.session_state.df
+                        # Verify aggregated group columns exist in df — if not, re-run aggregation
+                        intensity_cols = st.session_state.intensity_cols  # e.g. ['Normal', 'AD', 'MCI', 'PD']
+                        missing_group_cols = [c for c in intensity_cols if c not in df.columns]
+                        if missing_group_cols:
+                            st.error(
+                                f"⚠️ Aggregated condition columns {missing_group_cols} are missing from the DataFrame. "
+                                f"Please go back to **Step 2 (Aggregation & Options)** and click "
+                                f"**'Confirm Aggregation Settings'** again."
+                            )
+                            st.session_state.step2_done = False
+                            st.session_state.step3_done = False
+                            st.stop()
+                        protein_options = sorted(df['Protein.Group'].unique())
+                        st.session_state.global_protein_options = protein_options
+                        if not protein_options:
+                            st.error("No proteins found in the dataset.")
+                            st.stop()
+                        selected_protein = st.selectbox(
+                            "Protein of Interest",
+                            protein_options,
+                            index=protein_options.index(st.session_state.selected_protein_global)
+                                if st.session_state.selected_protein_global in protein_options else 0,
+                            key="selected_protein_global"
+                        )
+                        st.info("Protein selection, isoform merging, overlap strategy, and PDB source are managed in the sidebar.")
+                        combine_isoforms = st.session_state.combine_isoforms
+                        overlap_strategy = st.session_state.overlap_strategy
+                        
+                        if st.button("Process Protein", use_container_width=True, key="process_protein_3"):
+                            st.session_state.selected_protein   = selected_protein
+                            st.session_state.combine_isoforms   = combine_isoforms
+                            st.session_state.overlap_strategy   = overlap_strategy
+                            st.session_state.processed          = False
+                            st.session_state.step4_done         = False  # reset downstream
+                            st.rerun()
+
+                    if (st.session_state.get("selected_protein") 
+                            and not st.session_state.get("step4_done", False)):
+                        # === CRITICAL SAFETY CHECKS ===
+                        if not st.session_state.get("step1_done", False):
+                            st.error("Please go back and complete **Step 1: Upload Files** first.")
+                            st.stop()
+
+                        seq_records = st.session_state.get("seq_records")
+                        if seq_records is None or len(seq_records) == 0:
+                            st.error("FASTA sequences not loaded. Please return to the **Upload Files** expander, upload your FASTA file, and make sure Step 1 completes successfully.")
+                            st.info("Tip: You must upload CSV + FASTA + Metadata and let the file information summary appear before proceeding.")
+                            st.stop()
+
+                        df                  = st.session_state.df
+                        selected_conditions = st.session_state.selected_conditions
+                        
+                        selected_protein    = st.session_state.selected_protein
+                        combine_isoforms    = st.session_state.combine_isoforms
+                        overlap_strategy    = st.session_state.overlap_strategy
+                        has_ptm             = st.session_state.has_ptm
+                        intensity_cols       = st.session_state.intensity_cols
+                        #seq_records        = st.session_state.get("seq_records")
+                        # Safety check — catch missing columns early with a clear message
+                        #missing = [c for c in selected_conditions if c not in df.columns]
+                        #if missing:
+                            #st.error(
+                            #    f"⚠️ Condition column(s) {missing} not found in the DataFrame.\n\n"
+                            #    f"This happens when the app reruns before aggregation is saved. "
+                            #    f"Please go back to **Step 2** and click **'Confirm Aggregation Settings'** again."
+                            #)
+                            #st.session_state.step2_done = False   # force user back to Step 2
+                            #st.stop()
+                        base_id = selected_protein.split('-')[0]
+                        st.session_state.base_id = base_id 
+                        protein_seq = None
+                        matched_header="Not Found"
+                        for rec in seq_records:
+                            header = rec.id
+                            candidate = header.split('|')[1] if '|' in header and header.split('|')[0] in ('sp', 'tr') else header.split()[0]
+                            if candidate.split('-')[0] == base_id:
+                                protein_seq = str(rec.seq)
+                                matched_header = header
+                                st.success(f"Matched by ID: {header}")
+                                break
+
+                        isoforms = df[df['Protein.Group'].str.contains(
+                            selected_protein + r'(?:-\d+)?$', regex=True)]['Protein.Group'].unique()
+                        
+                        if len(isoforms) > 1 and combine_isoforms == "yes":
+                            selected_groups = list(isoforms)
+                        elif len(isoforms) > 1 and combine_isoforms == "no":
+                            selected_groups = st.multiselect(
+                                "Select Isoforms", options=list(isoforms), 
+                                default=list(isoforms), key="isoform_select")
+                        else:
+                            selected_groups = list(isoforms)
+                        selected_df = df[df['Protein.Group'].isin(selected_groups)]
+                        if protein_seq is None:
+                            st.info(f"No direct FASTA header match for {base_id}. Attempting peptide-based matching...")
+                            peptides_unique = selected_df['Stripped.Sequence'].dropna().astype(str).str.strip().str.upper().unique().tolist()
+                            peptides_unique = [p for p in peptides_unique if len(p) >= 7]
+
+                            best_rec = None
+                            best_count = 0
+
+                            for rec in seq_records:
+                                seq_str = str(rec.seq).upper()
+                                count = sum(1 for p in peptides_unique if p in seq_str)
+                                if count > best_count:
+                                    best_count = count
+                                    best_rec = rec
+
+                            if best_count >= 2:  # at least 2 peptides = reliable
+                                protein_seq = str(best_rec.seq)
+                                matched_header = best_rec.id
+                                st.success(f"Best match: {matched_header} ({best_count} peptides matched)")
+                            elif len(seq_records) == 1:
+                                protein_seq = str(seq_records[0].seq)
+                                matched_header = seq_records[0].id
+                                st.warning(f"Only one FASTA entry → using: {matched_header}")
+                            else:
+                                st.error(f"Could not match protein sequence. Check FASTA headers or peptide data.")
+                                st.stop()
+                        seq_len = len(protein_seq)
+                        # CRITICAL: SAVE TO SESSION STATE SO SUMMARY CAN SEE IT!
+                        st.session_state.protein_seq = protein_seq
+                        #st.session_state.selected_protein = selected_protein
+                        st.session_state.matched_fasta_header = matched_header
+                        st.session_state.base_id = base_id
+                        st.session_state.seq_len = seq_len
+                        # Isoform handling
+                        #isoforms = df[df['Protein.Group'].str.contains(selected_protein + r'(?:-\d+)?$', regex=True)]['Protein.Group'].unique()
+                        #if len(isoforms) > 1 and combine_isoforms == "yes":
+                            #st.info("Isoforms Detected")
+                            #selected_groups = list(isoforms)
+                        #elif len(isoforms) > 1 and combine_isoforms == "no":
+                            #selected_groups = st.multiselect("Select Isoforms", options=list(isoforms), default=list(isoforms))
+                        #else:
+                            ##selected_groups = list(isoforms)
+                        
+                        #if not selected_groups:
+                            #st.error("No isoforms selected.")
+                            #st.stop()
+                        
+                        
+                        st.session_state.selected_df = selected_df
+                        conditions = selected_conditions
+                        peptide_data = {}
+                        residue_data = {cond: [None] * seq_len for cond in conditions}
+                        ptm_data = {cond: {} for cond in conditions}
+                        min_max_logs = {}
+                        z_score_mapping = {}  # ← Store z-scores for single peptide view
+                        ptm_col = 'Modified.Sequence' if st.session_state.ptm_enabled and has_ptm else None
+                        
+                       
+                            
+                        #displayed_ptms = [um for cond in ptm_data.values() for um in cond.keys() if cond[um]['selected']]
+                        #if not displayed_ptms:
+                            #st.warning("No PTMs will be displayed: either none selected or none detected in this protein.")
+                        #else:
+                           # st.success(f"Displaying {len(displayed_ptms)} PTM type(s) where detected.")
+                            # Ensure ptm_configs exist for selected UniMods and render PTM configuration UI
+                        
+                        # STEP B: Now run the main mapping loop (ptm_configs already set above)
+                        for condition in conditions:
+                            intensity_col = condition
+
+                            if intensity_col not in selected_df.columns:
+                                st.error(f"Column '{intensity_col}' not found. Go back to Step 2.")
+                                st.session_state.step2_done = False
+                                st.session_state.step3_done = False
+                                st.stop()
+
+                            ptm_col_to_use = 'Modified.Sequence' if st.session_state.ptm_enabled and has_ptm else None
+
+                            # Compute z-scores for this condition and store them for later use
+                            peptides_for_cond = selected_df.groupby('Stripped.Sequence')[intensity_col].mean().reset_index()
+                            z_scores_for_cond = compute_z_scores(peptides_for_cond[intensity_col], is_frequency=st.session_state.is_frequency)
+                            z_score_mapping[condition] = dict(zip(peptides_for_cond['Stripped.Sequence'], z_scores_for_cond))
+
+                            residues, ptms = map_peptides_to_residues(
+                                selected_df, protein_seq, intensity_col, overlap_strategy,
+                                ptm_col=ptm_col_to_use,
+                                apply_tryptic=st.session_state.apply_tryptic
+                            )
+                            residue_data[condition] = residues
+
+                            ptm_data[condition] = {}
+                            if st.session_state.ptm_enabled:
+                                for um, positions in ptms.items():
+                                    if um not in st.session_state.selected_unimods:
+                                        continue
+                                    config = st.session_state.ptm_configs.get(um, {})
+                                    if not config.get('selected', True):
+                                        continue
+                                    ptm_data[condition][um] = {
+                                        'positions': sorted(list(positions)),
+                                        'selected': True,
+                                        'color': config.get('color', '#3700FF'),
+                                        'label': config.get('label', um)
+                                    }
+                            ptm_data[condition] = normalize_ptm_data(ptm_data[condition])
+
+                            covered = [v for v in residues if v is not None]
+                            if not covered:
+                                st.error(f"No peptides mapped for {condition}.")
+                                st.stop()
+                            min_max_logs[condition] = (min(covered), max(covered))
+
+                            peptides = selected_df.groupby('Stripped.Sequence')[intensity_col].mean().reset_index()
+                            peptide_data[condition] = peptides 
+                        st.subheader("Detected Sequence")
+                        st.markdown(f"**FASTA header:** {matched_header}")
+                        seq_html = format_sequence_for_display(protein_seq, residue_data, conditions, line_len=150, group=20)
+                        copy_html = sequence_copy_component(protein_seq)
+                        st.components.v1.html(copy_html + seq_html, height=320)
+                    
+                        pdb_str = None
+                        fetched_version = None
+                        if st.session_state.pdb_source == "AlphaFold":
+                            for version in ["v6", "v4", "v3"]:
+                                pdb_url = f"https://alphafold.ebi.ac.uk/files/AF-{base_id}-F1-model_{version}.pdb"
+                                with st.spinner(f"Attempting to fetch AlphaFold {version} structure for {base_id}..."):
+                                    try:
+                                        r = requests.get(pdb_url, timeout=30)
+                                        if r.status_code == 200:
+                                            pdb_str = r.text
+                                            fetched_version = version
+                                            st.info(f"✅ Found AlphaFold **{version}** structure for {base_id}.")
+                                            break  # stop trying once we have a hit
+                                        elif r.status_code == 404:
+                                            st.warning(f"Model_{version} not found for {base_id}, trying next version...")
+                                        else:
+                                            st.warning(f"PDB fetch failed for {version} (status {r.status_code}), trying next...")
+                                    except requests.exceptions.RequestException as e:
+                                        st.error(f"Failed to fetch PDB for {base_id}: {str(e)}.")
+                                        st.stop()
+
+                            if pdb_str is None:
+                                st.error(f"No AlphaFold structure found for {base_id} in v6, v4, or v3. "
+                                        f"Try uploading a PDB file manually.")
+                                st.stop()
+                        else:  # Upload PDB
+                            if st.session_state.uploaded_pdb is None:
+                                st.error("No PDB file uploaded.")
+                                st.stop()
+                            # Validate filename
+                            pdb_filename = st.session_state.uploaded_pdb.name
+                            if not pdb_filename.endswith('.pdb'):
+                                st.error("Uploaded file must have a .pdb extension.")
+                                st.stop()
+
+                            filename_id = pdb_filename[:-4]  # Remove .pdb extension
+                            if filename_id != base_id:
+                                st.error(f"PDB filename ({pdb_filename}) must match the selected protein's UniProt ID ({base_id}).")
+                                st.stop()
+
+                            try:
+                                pdb_str = st.session_state.uploaded_pdb.getvalue().decode("utf-8")
+                            except Exception as e:
+                                st.error(f"Error reading uploaded PDB file: {e}")
+                                st.stop()
+                        
+                        source_label = f"AlphaFold {fetched_version}" if st.session_state.pdb_source == "AlphaFold" else "uploaded"
+                        st.success(f"Loaded {source_label} structure for {base_id} ({len(pdb_str)} bytes)")
+                        plddt_list, model_name, mean_plddt = extract_plddt_and_model(pdb_str, protein_seq)
+                        mean_plddt_display = f"{mean_plddt:.1f}" if mean_plddt is not None else "N/A"
+                        st.info(f"**Mean pLDDT:** {mean_plddt_display} (Overall Confidence)")
+
+                        st.session_state.residue_data    = residue_data
+                        st.session_state.ptm_data        = ptm_data
+                        st.session_state.pdb_str         = pdb_str
+                        st.session_state.base_id         = base_id
+                        st.session_state.min_max_logs    = min_max_logs
+                        st.session_state.conditions      = conditions
+                        st.session_state.peptide_data         = peptide_data
+                        st.session_state.z_score_mapping      = z_score_mapping  # ← Store z-scores for single peptide view
+                        st.session_state.plddt_list           = plddt_list
+                        st.session_state.model_name           = model_name
+                        st.session_state.mean_plddt           = mean_plddt
+                        st.session_state.step4_done      = True
+
+                    if (
+                        st.session_state.get("step4_done", False)
+                        and st.session_state.get("ptm_enabled", False)
+                        and st.session_state.get("selected_unimods")
+                    ):
+                        if "ptm_configs" not in st.session_state:
+                            st.session_state.ptm_configs = {}
+                        for um in st.session_state.selected_unimods:
+                            if um not in st.session_state.ptm_configs:
+                                st.session_state.ptm_configs[um] = {
+                                    "selected": True,
+                                    "label": um,
+                                    "color": "#3700FF",
+                                }
+
+                        # Propagate updated colors/labels into already-computed ptm_data
+                        if "ptm_data" in st.session_state and "conditions" in st.session_state:
+                            for cond in st.session_state.conditions:
+                                for um, entry in st.session_state.ptm_data.get(cond, {}).items():
+                                    if um in st.session_state.ptm_configs:
+                                        cfg = st.session_state.ptm_configs[um]
+                                        entry["color"]    = cfg["color"]
+                                        entry["label"]    = cfg["label"]
+                                        entry["selected"] = cfg["selected"]
+                    # ── APPEARANCE SETTINGS — always rendered after processing ──
+                    if st.session_state.get("step4_done", False):
+                        st.info("Appearance settings are managed in the sidebar.")
+            with st.expander("Mapping & structure visualization", expanded=st.session_state.step4_done and not st.session_state.step5_done):
+                if not st.session_state.step4_done:
+                    st.info("Complete the previous step to enable structural visualization.")
+                elif st.session_state.base_id is None :
+                    st.warning("protein data not yet processed."
+                            "please complete the step-4 by clicking the 'process protein' first.")
+                    st.stop()
+                else:
+                    base_id                   = st.session_state.base_id
+                    protein_seq               = st.session_state.protein_seq
+                    seq_len                   = st.session_state.seq_len
+                    residue_data              = st.session_state.residue_data
+                    ptm_data                  = st.session_state.ptm_data
+                    pdb_str                   = st.session_state.pdb_str
+                    bg_color                  = st.session_state.bg_color
+                    selected_cmap             = st.session_state.selected_cmap
+                    selected_not_mapped_color = st.session_state.not_mapped_color
+                    min_max_logs              = st.session_state.min_max_logs
+                    conditions                = st.session_state.conditions
+                    selected_df               = st.session_state.selected_df
+                    has_ptm                   = st.session_state.has_ptm
+                    overlap_strategy          = st.session_state.overlap_strategy
+                    plddt_list                = st.session_state.plddt_list
+                    model_name                = st.session_state.model_name
+                    mean_plddt                = st.session_state.mean_plddt
+
+                    st.subheader("PhosphoSitePlus®")
+                    try:
+                        uniprot_url = f"https://rest.uniprot.org/uniprotkb/{base_id}"
+                        response = requests.get(uniprot_url, timeout=10)
+                        if response.status_code == 200:
+                            uniprot_data = response.json()
+                            gene_name = uniprot_data.get('genes', [{}])[0].get('geneName', {}).get('value', 'Unknown')
+                        else:
+                            gene_name = 'Unknown'
+                    except Exception as e:
+                        gene_name = 'Unknown'
+                        st.warning(f"Failed to fetch gene name for {base_id}: {e}")
+                    if gene_name != 'Unknown':
+                        phosphosite_url = f"https://www.phosphosite.org/simpleSearchSubmitAction.action?searchStr={gene_name}"
+                        st.markdown(
+                            f'<span style="font-size:20px; color:Var(--color-text-primary);">Explore PhosphoSitePlus® : </span>'
+                            f'<a href="{phosphosite_url}" target="_blank" style="font-size:20px; color:Var(--color-text-primary); text-decoration:underline;">{base_id}|{gene_name}</a>',
+                            unsafe_allow_html=True
+                        )
+                    else:
+                        st.markdown(
+                            f'<span style="font-size:20px; color:Var(--color-text-primary);">Explore PhosphoSitePlus® : </span>'
+                            f'<span style="font-size:20px; color:Var(--color-text-primary);">No gene name found for {base_id}. Unable to generate PhosphoSitePlus link.</span>',
+                            unsafe_allow_html=True
+                        )
+                    
+                    with st.container():
+                        st.subheader("3D Structure Visualizations")
+
+                        # === Extract peptides and compute positions ===
+
+                        # Compute peptide start positions directly from protein sequence
+                        def compute_positions_with_label(peptide_list):
+                            result = {}
+                            for pep in peptide_list:
+                                pep = str(pep).strip()
+                                if pep == "":
+                                    continue
+                                pos = find_peptide_position(protein_seq, pep)
+                                label = f"{pep} (pos: {pos})"
+                                result[pep] = (pos,label)
+                            return result
+                        # ---- Unique peptides for dropdowns (FIXED & ROBUST) ----
+                        stripped_unique = selected_df["Stripped.Sequence"].dropna().astype(str).unique().tolist()
+                        # === MODIFIED SEQUENCE: ONLY THOSE WITH ACTUAL PTMs ===
+                        if (st.session_state.ptm_enabled and 
+                            st.session_state.selected_unimods and 
+                            "Modified.Sequence" in selected_df.columns):
+
+                            # Build regex pattern for selected UniMods only
+                            pattern = '|'.join([re.escape(f"UniMod:{um.split(':')[-1]}") for um in st.session_state.selected_unimods])
+                            
+                            mod_mask = selected_df["Modified.Sequence"].astype(str).str.contains(pattern, case=False, na=False)
+                            filtered_modified_df = selected_df.loc[mod_mask]
+
+                            if filtered_modified_df.empty:
+                                st.warning("No peptides found with the selected UniMod(s) — falling back to stripped sequences for dropdown.")
+                                modified_unique = stripped_unique
+                            else:
+                                modified_unique = filtered_modified_df["Modified.Sequence"].dropna().astype(str).unique().tolist()
+                        else:
+                            # PTM disabled or no UniMod selected → fallback
+                            modified_unique = stripped_unique
+
+                        # Now compute positions exactly like you do in the quant tab
+                        def compute_positions_with_label(peptide_list):
+                            result = {}
+                            for pep in peptide_list:
+                                pep_str = str(pep).strip()
+                                if not pep_str:
+                                    continue
+                                pos = find_peptide_position(protein_seq, pep_str)
+                                label = f"{pep_str} (pos: {pos})"
+                                result[pep_str] = (pos, label)
+                            return result
+
+                        stripped_positions = compute_positions_with_label(stripped_unique)
+                        modified_positions  = compute_positions_with_label(modified_unique)  # ← now only real modified peptides!
+
+                        # Sort by position (same as before)
+                        def sort_labels_by_position(pos_dict):
+                            sorted_items = sorted(pos_dict.items(), key=lambda x: x[1][0] if x[1][0] != -1 else 999999)
+                            return [label for _, (_, label) in sorted_items]
+
+                        stripped_sorted_labels  = sort_labels_by_position(stripped_positions)
+                        modified_sorted_labels  = sort_labels_by_position(modified_positions)  # ← clean & correct!
+                    
+                        # === Session state initialization ===
+                        if "view_mode" not in st.session_state:
+                            st.session_state.view_mode = "Full Structure (All Peptides)"
+                        if "selected_peptide" not in st.session_state:
+                            st.session_state.selected_peptide = None
+
+                        st.markdown("#### Peptide View Mode")
+                        view_mode = st.radio(
+                            "Choose visualization mode:",
+                            options=[
+                                "Full Structure (All Peptides)",
+                                "View by Stripped Sequence",
+                                "View by Modified Sequence"
+                            ],
+                            index=["Full Structure (All Peptides)", "View by Stripped Sequence", "View by Modified Sequence"]
+                                .index(st.session_state.view_mode),
+                            key="view_mode_radio",
+                            horizontal=True
+                        )
+
+                        if view_mode != st.session_state.view_mode:
+                            st.session_state.view_mode = view_mode
+                            st.session_state.selected_peptide = None
+                            st.rerun()
+
+                        selected_peptide = None
+                        show_full = (st.session_state.view_mode == "Full Structure (All Peptides)")
+
+                        # === Peptide selector ===
+                        if st.session_state.view_mode == "View by Stripped Sequence":
+                            peptide_options = stripped_sorted_labels
+                            selected_label = st.selectbox(
+                                "Select a stripped peptide to highlight:",
+                                options=peptide_options,
+                                index=0 if st.session_state.selected_peptide not in stripped_positions else peptide_options.index(next(label for pep,(pos,label) in stripped_positions.items()if pep==st.session_state.selected_peptide)),
+                                key="stripped_selector"
+                            )
+                            selected_peptide = re.split(r"\s*\(pos:", selected_label)[0].strip()
+                            st.session_state.selected_peptide = selected_peptide
+                            st.info(f"Showing peptide: **{selected_label}**")
+                            
+                        elif st.session_state.view_mode == "View by Modified Sequence":
+                            peptide_options = modified_sorted_labels
+                            selected_label = st.selectbox(
+                                "Select a modified peptide to highlight:",
+                                options=peptide_options,
+                                index=0 if st.session_state.selected_peptide not in modified_positions else
+                                    peptide_options.index(next(label for pep, (pos, label) in modified_positions.items() if pep == st.session_state.selected_peptide)),
+                                key="modified_selector"
+                            )
+                            selected_peptide = re.split(r"\s*\(pos:", selected_label)[0].strip()
+                            st.session_state.selected_peptide = selected_peptide
+                            st.info(f"Showing modified peptide: **{selected_label}**")
+
+                        else:
+                            st.success("Showing all mapped peptides on the protein structure")
+
+                        # === BUILD RESIDUE DATA FOR VISUALIZATION ===
+                        if show_full:
+                            viewer_residue_data = [residue_data[cond] for cond in conditions]
+                            viewer_ptm_data = [ptm_data[cond] for cond in conditions]  # Use full PTM data for all viewers
+                        else:
+                            target_peptide = selected_peptide
+                            use_modified = (st.session_state.view_mode == "View by Modified Sequence")
+                            filter_col = 'Modified.Sequence' if use_modified else 'Stripped.Sequence'
+
+                            peptide_rows = selected_df[selected_df[filter_col] == target_peptide]
+
+                            if peptide_rows.empty:
+                                st.error(f"Selected peptide not found in current data.")
+                                st.stop()
+
+                            viewer_residue_data = []
+                            viewer_ptm_data = []  # Clear & build fresh
+
+                            for condition in conditions:
+                                single_residue_list = [None] * len(protein_seq)
+                                intensity_col = condition
+                                ptm_col_to_use = 'Modified.Sequence' if st.session_state.ptm_enabled and has_ptm else None
+
+                                # ✅ FIX: Use pre-computed z-scores from full structure instead of recalculating
+                                z_score_lookup = st.session_state.get("z_score_mapping", {}).get(condition, {})
+                                pre_computed_scores = None
+                                if z_score_lookup:
+                                    # Convert the peptide-to-zscore dict to an array compatible with map_peptides_to_residues
+                                    # We need to create z_scores array matching the peptides in peptide_rows
+                                    peptides_in_rows = peptide_rows.groupby('Stripped.Sequence')[intensity_col].mean().reset_index()
+                                    pre_computed_scores = np.array([z_score_lookup.get(pep, 0.0) for pep in peptides_in_rows['Stripped.Sequence']])
+
+                                residues_temp, ptms_temp = map_peptides_to_residues(
+                                    peptide_rows,
+                                    protein_seq,
+                                    intensity_col,
+                                    overlap_strategy,
+                                    ptm_col=ptm_col_to_use,
+                                    apply_tryptic=st.session_state.apply_tryptic,
+                                    pre_computed_z_scores=pre_computed_scores
+                                )
+                                #st.write("DEBUG: PTM dict from mapping:", ptms_temp)
+                                #st.write("DEBUG: Example positions for UniMod:28:", ptms_temp.get('UniMod:28', set()))
+                                # Copy residues (only if intensity non-NaN for this condition)
+                                if not peptide_rows[intensity_col].isna().all():
+                                    for i, val in enumerate(residues_temp):
+                                        if val is not None:
+                                            single_residue_list[i] = val
+                                else:
+                                    # For missing conditions: use gray/low-intensity fallback if needed, but keep PTMs
+                                    pass
+
+                                viewer_residue_data.append(single_residue_list)
+
+                                # Handle PTMs: build condition_ptm even if intensity missing (PTMs are peptide-intrinsic)
+                                condition_ptm = {}
+                                # NEW: check if the condition actually has non-zero, non-NaN intensity
+                                has_real_intensity = (
+                                    peptide_rows[intensity_col]
+                                    .replace(0, np.nan)          # treat 0 as missing
+                                    .notna()
+                                    .any()
+                                )
+                                if st.session_state.ptm_enabled and ptms_temp and has_real_intensity:
+                                    for um, positions in ptms_temp.items():
+                                        if um in st.session_state.selected_unimods:
+                                            config = st.session_state.ptm_configs.get(um, {})
+                                            display_label = config.get("label", um)   
+                                            show_checkbox = config.get("selected", True)
+                                            condition_ptm[um] = {
+                                                'positions': sorted(list(positions)),
+                                                'selected':config.get('selected', True),
+                                                'color': config.get('color', '#3700FF'),
+                                                'label': display_label,
+                                            }
+
+                                viewer_ptm_data.append(condition_ptm)  # ONLY append once per condition!
+                        if not show_full:
+                            st.info(f"**Single peptide view mode active**: Only the selected peptide '{selected_peptide}' is colored/highlighted in 3D and linear plots. The rest of the protein remains unmapped (grey).")
+                        peptide_atlas_url = f"https://db.systemsbiology.net/sbeams/cgi/PeptideAtlas/GetProtein?atlas_build_id=592&protein_name={base_id}&action=QUERY"
+                        st.markdown(
+                            f'<span style="font-size:20px; color:Var(--color-text-primary);">Explore PeptideAtlas : </span>'
+                            f'<a href="{peptide_atlas_url}" target="_blank" style="font-size:16px; color:Var(--color-text-primary); text-decoration:underline;">Explore Peptides of {base_id} in Peptide Atlas</a>'
+                            f'</div>',
+                            unsafe_allow_html=True
+                        )
+                        # Above "3D Structure Visualizations" header
+                        alphafold_url = f"https://alphafold.ebi.ac.uk/search/text/{base_id}"
+                        st.markdown(
+                            f'<span style="font-size:20px; color:Var(--color-text-primary);">Explore AlphaFold DB : </span>'
+                            f'<a href="{alphafold_url}" target="_blank" style="font-size:16px; color:Var(--color-text-primary); text-decoration:underline;">View {base_id} in AlphaFold Database</a>'
+                            f'</div>',
+                            unsafe_allow_html=True
+                        )
+                        # ---------- DisProt ----------
+                        # ---------- DisProt ----------
+                        disprot_info   = get_disprot_info(base_id)
+                        disorder_percent = disprot_info.get("disorder_percent")
+                        link           = disprot_info.get("link", "#")
+                        link_text      = disprot_info.get("link_text", f"Search {base_id} in DisProt")
+                        link_html      = f'<a href="{link}" target="_blank">{link_text}</a>'
+
+                        if not disprot_info.get("found", False):
+                            # Distinguish network failure from genuine absence
+                            lt = disprot_info.get("link_text", "")
+                            if any(k in lt for k in ("error", "unreachable", "timed out", "SSL")):
+                                st.error(
+                                    f"⚠️ Could not reach DisProt for **{base_id}**. "
+                                    f"This is a network/connectivity issue, not a missing entry. "
+                                    f"Try again or check your internet connection."
+                                )
+                            else:
+                                st.warning(
+                                    f"**{base_id}** has no entry in DisProt. "
+                                    f"It may not have been experimentally characterised yet."
+                                )
+
+                        elif disorder_percent is None:
+                            st.info(
+                                f"**{base_id}** is in DisProt (ID: {disprot_info.get('disprot_id')}) "
+                                f"but the disorder content percentage is unavailable."
+                            )
+
+                        elif disorder_percent >= 30.0:
+                            st.success(
+                                f"✅ **{base_id}** is a **disordered protein**  \n"
+                                f"Disorder content: **{disorder_percent:.1f}%**"
+                            )
+
+                        else:
+                            st.warning(
+                                f"**{base_id}** is **not considered disordered**  \n"
+                                f"Disorder content: **{disorder_percent:.1f}%** (threshold: 30%)"
+                            )
+
+                        # Always show DisProt link
+                        st.markdown(f"🔗 Explore DisProt: {link_html}", unsafe_allow_html=True)
+                        # DEBUG: print PTM structures passed to the viewer so we can inspect them when PTMs don't appear
+                        #try:
+                            #st.write("DEBUG: ptm_data (left):", ptm_data[condition1_name])
+                            #st.write("DEBUG: ptm_data (right):", ptm_data[condition2_name])
+                            #st.write("DEBUG: protein_ptms:", protein_ptms if 'protein_ptms' in locals() else None)
+                        #except Exception:
+                            # don't break rendering if debug printing fails
+                            #pass
+                        
+                        # ---- NEW: also normalize the protein-level fallback ----
+                        if 'protein_ptms' in locals() and protein_ptms:
+                            protein_ptms = normalize_ptm_data(protein_ptms)
+
+                        render_synced_viewers(pdb_str, viewer_residue_data, bg_color, conditions, selected_cmap, selected_not_mapped_color, viewer_ptm_data)
+                        st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
+                        
+                        # Calculate coverage for each condition
+                        coverages = {}
+                        for cond in conditions:
+                            coverages[cond] = (sum(1 for v in residue_data[cond] if v is not None) / seq_len * 100) if seq_len > 0 else 0
+                        
+                        # ======================================================
+                        #              LINEAR SEQUENCE VISUALIZATIONS
+                        # ======================================================
+                        st.subheader("Linear Sequence Visualizations")
+
+                        view_mode = st.session_state.view_mode
+                        selected_peptide = st.session_state.selected_peptide
+
+                        # Decide what to show based on 3D selection
+                        if view_mode == "Full Structure (All Peptides)" or selected_peptide is None:
+                            # Show all peptides — default behavior
+                            linear_residue_data = residue_data
+                            linear_ptm_data = ptm_data
+                            st.info("Linear plots show all mapped peptides.")
+
+                        else:
+                            # SHOW ONLY *ONE* PEPTIDE
+                            st.success(f"Linear plots show only peptide: **{selected_peptide}**")
+
+                            # Determine whether to filter on stripped or modified sequence
+                            filter_col = (
+                                "Modified.Sequence" if view_mode == "View by Modified Sequence"
+                                else "Stripped.Sequence"
+                            )
+
+                            peptide_rows = selected_df[selected_df[filter_col] == selected_peptide]
+
+                            if peptide_rows.empty:
+                                st.error(f"Selected peptide '{selected_peptide}' not found in data.")
+                                st.stop()
+
+                            # Build linear data for each condition
+                            linear_residue_data = {}
+                            linear_ptm_data = {}
+
+                            for cond in conditions:
+                                # List of residues for linear plot
+                                residues_linear = [None] * len(protein_seq)
+
+                                # Choose if PTM column is active
+                                ptm_col_to_use = 'Modified.Sequence' if st.session_state.ptm_enabled and has_ptm else None
+                                if cond not in peptide_rows.columns:
+                                    st.error(f"Column '{cond}' missing from peptide data. Re-run Step 2.")
+                                    st.stop()
+                                
+                                # ✅ FIX: Use pre-computed z-scores from full structure
+                                z_score_lookup = st.session_state.get("z_score_mapping", {}).get(cond, {})
+                                pre_computed_scores = None
+                                if z_score_lookup:
+                                    peptides_in_rows = peptide_rows.groupby('Stripped.Sequence')[cond].mean().reset_index()
+                                    pre_computed_scores = np.array([z_score_lookup.get(pep, 0.0) for pep in peptides_in_rows['Stripped.Sequence']])
+                                
+                                # Map only this peptide
+                                temp_residues, temp_ptms = map_peptides_to_residues(
+                                    peptide_rows,
+                                    protein_seq,
+                                    intensity_col=cond,
+                                    overlap_strategy=overlap_strategy,
+                                    ptm_col=ptm_col_to_use,
+                                    apply_tryptic=st.session_state.apply_tryptic,
+                                    proteotypic_only=st.session_state.proteotypic_only,
+                                    pre_computed_z_scores=pre_computed_scores
+                                )
+                                
+                                # Copy mapped residues only
+                                for i, v in enumerate(temp_residues):
+                                    if v is not None:
+                                        residues_linear[i] = v
+
+                                linear_residue_data[cond] = residues_linear
+
+                                # Rebuild PTM data ONLY for this peptide
+                                cond_ptm = {}
+                                if st.session_state.ptm_enabled and temp_ptms:
+                                    for um, positions in temp_ptms.items():
+                                        if um in st.session_state.selected_unimods:
+                                            cfg = st.session_state.ptm_configs.get(um, {})
+                                            resolved_label = cfg.get("label", um)
+                                            resolved_selected = cfg.get("selected", True)
+                                            cond_ptm[um] = {
+                                                "positions": sorted(list(positions)),
+                                                "selected": resolved_selected,
+                                                "color": cfg.get("color", "#3700FF"),
+                                                "label": resolved_label,
+                                            }
+                                linear_ptm_data[cond] = cond_ptm
+
+                        # --------------------------------------------------------------
+                        # RENDER LINEAR PLOTS FOR EACH CONDITION
+                        # --------------------------------------------------------------
+                        first_condition = conditions[0] if conditions else None
+                        for cond in conditions:
+                            mapped_count = sum(1 for v in linear_residue_data[cond] if v is not None)
+                            coverage_pct = (mapped_count / len(protein_seq) * 100) if len(protein_seq) > 0 else 0
+                            short_title = f"{cond} (Coverage: {coverage_pct:.1f}%)"
+                           # label_style = "font-size:16px; font-weight:bold; color:Var(--text-color);" if cond == first_condition else "font-size:15px; color:Var(--text-color);"
+                            st.markdown(
+                                f'<div style="text-align:center; margin:12px 0 6px 0;{short_title}</div>',
+                                unsafe_allow_html=True
+                            )
+                            is_first = (cond == first_condition)
+                            render_linear_plot(
+                                linear_residue_data[cond],
+                                short_title,
+                                seq_len,
+                                min_max_logs[cond][0],
+                                min_max_logs[cond][1],
+                                protein_seq,
+                                model_name,
+                                plddt_list,
+                                mean_plddt,
+                                cmap_name=selected_cmap,
+                                not_mapped_color=selected_not_mapped_color,
+                                ptm_data=linear_ptm_data[cond],
+                                show_full_header=is_first,
+                                show_ptm_legend=is_first
+                            )
+
+                        st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
+
+                        # Colorbar
+                        st.subheader("Z score Colorbar")
+                        overall_vmin = min(min_max_logs[cond][0] for cond in conditions)
+                        overall_vmax = max(min_max_logs[cond][1] for cond in conditions)
+                        cbar_fig, cbar_ax = plt.subplots(figsize=(8, 0.4))
+                        norm = Normalize(vmin=overall_vmin, vmax=overall_vmax)
+                        sm = ScalarMappable(cmap=colormaps[selected_cmap], norm=norm)
+                        cbar = cbar_fig.colorbar(sm, cax=cbar_ax, orientation='horizontal')
+                        if st.session_state.is_frequency:
+                            cbar.set_label('Frequency- Z-score', fontsize=10)
+                        else:
+                            cbar.set_label('Z-Score Intensity', fontsize=10)
+                        cbar.ax.tick_params(labelsize=9)
+                        #cbar.outline.set_visible(False)
+                        #cbar_fig.patch.set_alpha(0.0)
+                        #cbar_ax.set_facecolor((0,0,0,0))
+                        plt.tight_layout()
+                        buf = io.BytesIO()
+                        plt.savefig(buf, format='png', bbox_inches='tight', dpi=300, transparent=False)
+                        buf.seek(0)
+                        img_str = base64.b64encode(buf.getvalue()).decode()
+                        plt.close(cbar_fig)
+                        html_content = f"""
+                        <div style="display: flex; justify-content: center; align-items: center; width: 100%; max-width: 600px; margin: 10px auto;">
+                            <img src="data:image/png;base64,{img_str}" style="width: 100%; max-width: 500px; height: auto; border: 1px solid #ddd; border-radius: 4px;">
+                        </div>
+                        """
+                        st.components.v1.html(html_content, height=80)
+
+                        st.divider()
+                        st.session_state.step5_done = True
+                        st.session_state.step6_done= True
+
+            with st.expander("Quantitative Analysis", expanded=st.session_state.step5_done and not st.session_state.step6_done):
+                if not st.session_state.step6_done:
+                    st.info("Complete the previous step to enable quantitative analysis.")
+                else:
+                    conditions   = st.session_state.conditions
+                    residue_data = st.session_state.residue_data
+                    peptide_data = st.session_state.peptide_data
+                    selected_df  = st.session_state.selected_df
+                    base_id      = st.session_state.base_id
+                    sample_cols  = st.session_state.get("sample_cols", [])   # FIX
+                    meta_map     = st.session_state.get("meta_map", {})       # FIX
+                    metadata     = st.session_state.get("metadata", pd.DataFrame())  # FIX
+                    groups       = st.session_state.get("groups", [])         # FIX
+                    
+                    st.subheader("Global Sample Separation – PCA")
+                    st.caption(
+                        "PCA on log₂-transformed peptide intensities from the currently selected protein. "
+                        "Uses all raw sample columns (not aggregated groups) to show individual sample behavior."
+                    )
+
+                    # Settings (left) + Plot (right)
+                    col_left, col_right = st.columns([1, 4])
+
+                    with col_left:
+                        st.markdown("**PCA settings**")
+                        
+                        pca_use_log2 = st.checkbox(
+                            "Apply log₂ transformation", 
+                            value=True,
+                            help="Strongly recommended for peptide intensity data",
+                            key="pca_multi_log2"
+                        )
+                        
+                        pca_impute_method = st.selectbox(
+                            "Imputation for missing values",
+                            ["row median (recommended)", "zero", "remove peptide if any missing"],
+                            index=0,
+                            key="pca_multi_impute"
+                        )
+                        compute_pca = st.button("Compute PCA", type="primary", use_container_width=True, key="btn_pca_multi")
+
+                    with col_right:
+                        # Always read from session_state — local variable may not exist on rerender
+                        sample_cols = st.session_state.get("sample_cols", [])
+                        meta_map = st.session_state.get("meta_map", {})
+                        metadata = st.session_state.get("metadata", pd.DataFrame())
+                        if len(sample_cols) < 3:
+                            st.warning("Need at least 3 samples to produce a meaningful PCA.")
+                        
+                        elif compute_pca:
+                            with st.spinner("Preparing peptide matrix and running PCA..."):
+                                
+                                # 1. Wide matrix: peptides × raw samples
+                                intensity_wide = selected_df.pivot_table(
+                                    index='Stripped.Sequence',
+                                    values=sample_cols,
+                                    aggfunc='mean'  # handle any duplicate measurements
+                                )
+                                
+                                # Filter: peptides with ≥ 2 valid values
+                                intensity_wide = intensity_wide[
+                                    intensity_wide.notna().sum(axis=1) >= 2
+                                ]
+                                
+                                if intensity_wide.empty:
+                                    st.error("No peptides remain after filtering (need ≥2 valid values per peptide).")
+                                else:
+                                    intensity_mat = intensity_wide[sample_cols].to_numpy()
+                                    
+                                    # 2. Log₂ transform
+                                    if pca_use_log2:
+                                        intensity_mat = np.log2(np.clip(intensity_mat, 1e-10, None))
+                                    
+                                    # 3. Imputation
+                                    if pca_impute_method == "row median (recommended)":
+                                        row_med = np.nanmedian(intensity_mat, axis=1, keepdims=True)
+                                        intensity_mat = np.where(np.isnan(intensity_mat), row_med, intensity_mat)
+                                    elif pca_impute_method == "zero":
+                                        intensity_mat = np.nan_to_num(intensity_mat, nan=0.0)
+                                    else:  # remove peptide
+                                        valid_rows = ~np.any(np.isnan(intensity_mat), axis=1)
+                                        intensity_mat = intensity_mat[valid_rows]
+                                        intensity_wide = intensity_wide.iloc[valid_rows]
+                                    
+                                    if intensity_mat.shape[0] < 2:
+                                        st.error("Too few peptides left after imputation/filtering.")
+                                    else:
+                                        # 4. Transpose → samples × peptides
+                                        X = intensity_mat.T
+                                        
+                                        samples_used = sample_cols
+                                        groups_used = [meta_map.get(s, "Unknown") for s in samples_used]
+                                        
+                                        # 5. Scale + PCA (always 2 components)
+                                        from sklearn.preprocessing import StandardScaler
+                                        from sklearn.decomposition import PCA
+                                        import plotly.express as px
+                                        
+                                        scaler = StandardScaler()
+                                        X_scaled = scaler.fit_transform(X)
+                                        
+                                        n_peptides = X.shape[1]
+                                        n_samples = X.shape[0]
+                                        
+                                        pca_model = PCA(n_components=2)
+                                        pcs = pca_model.fit_transform(X_scaled)
+                                        var_expl = pca_model.explained_variance_ratio_ * 100
+                                        
+                                        pca_df = pd.DataFrame({
+                                            'PC1': pcs[:, 0],
+                                            'PC2': pcs[:, 1],
+                                            'Sample': samples_used,
+                                            'Group': groups_used
+                                        })
+                                        
+                                        # Plot
+                                        fig = px.scatter(
+                                            pca_df,
+                                            x='PC1', y='PC2',
+                                            color='Group',
+                                            symbol='Group',
+                                            hover_name='Sample',
+                                            title=f"PCA – {n_samples} samples • {n_peptides} peptides",
+                                            labels={
+                                                'PC1': f"PC1 ({var_expl[0]:.1f}%)",
+                                                'PC2': f"PC2 ({var_expl[1]:.1f}%)"
+                                            },
+                                            opacity=0.9,
+                                            height=540,
+                                            color_discrete_sequence=px.colors.qualitative.Bold,
+                                            symbol_sequence=['circle', 'square', 'diamond', 'triangle-up', 'cross', 'x-open']
+                                        )
+                                        
+                                        fig.update_traces(marker=dict(size=10, line=dict(width=1)))
+                                        fig.update_layout(
+                                            legend=dict(
+                                                title="Group",
+                                                yanchor="top", y=0.99,
+                                                xanchor="left", x=1.02
+                                            ),
+                                            hovermode="closest"
+                                        )
+                                        
+                                        st.plotly_chart(fig, use_container_width=True)
+                                        
+                                        # Quick interpretation
+                                        total_var = var_expl[0] + var_expl[1]
+                                        if total_var < 40:
+                                            st.caption("⚠ Low explained variance (<40%) — main patterns may not be captured well in 2D.")
+                                        if any(g == "Unknown" for g in groups_used):
+                                            st.caption("Note: Some samples have no group assignment.")
+                    # --- Quantitative Visualization ---
+                    st.subheader("📈 Quantitative Visualization")
+
+                    # --- Select peptide type column ---
+                    available_cols = [c for c in ["Stripped.Sequence", "Modified.Sequence"] if c in selected_df.columns]
+                    if not available_cols:
+                        st.warning("No peptide columns found (expected 'Stripped.Sequence' or 'Modified.Sequence').")
+                    else:
+                        peptide_type = st.selectbox("Type of Peptide", available_cols, index=0, key="peptide_type_selectbox")
+                    # --- Build peptide list based on selected type ---
+                        if peptide_type == "Modified.Sequence":
+                            # Only keep peptides containing any UniMod tag
+                            mod_mask = selected_df["Modified.Sequence"].astype(str).str.contains(r"UniMod:\d+", regex=True, na=False)
+                            filtered_df = selected_df.loc[mod_mask].copy()
+
+                            # Extract all UniMod numbers present
+                            all_text = " ".join(filtered_df["Modified.Sequence"].dropna().astype(str).tolist())
+                            unimods = sorted(set(re.findall(r"UniMod:\d+", all_text)))
+
+                            # Show detected UniMods to user
+                            st.markdown(f"### UniMod types detected: `{', '.join(unimods) if unimods else 'None found'}`")
+
+                            # Optional: allow user to filter by UniMod type
+                            selected_unimod = st.selectbox("Filter by UniMod type (optional)", ["All"] + unimods, key="unimod_selectbox")
+                            if selected_unimod != "All":
+                                filtered_df = filtered_df[
+                                    filtered_df["Modified.Sequence"].astype(str).str.contains(selected_unimod, regex=False)
+                                ]
+
+                            # *** NEW: add position to every entry ***
+                            peptide_with_pos = []
+                            for pep in filtered_df["Modified.Sequence"].dropna().unique():
+                                pos = find_peptide_position(protein_seq, pep)
+                                peptide_with_pos.append(f"{pep} (pos: {pos})")
+
+                            def extract_position(p):
+                                m = re.search(r"pos:\s*(\d+)", p)
+                                return int(m.group(1)) if m else 999999
+
+                            available_peptides = sorted(peptide_with_pos, key=extract_position)    # <-- dropdown shows pos
+                        else:
+                            # Stripped sequence – same logic
+                            peptide_with_pos = []
+                            for pep in selected_df["Stripped.Sequence"].dropna().unique():
+                                pos = find_peptide_position(protein_seq, pep)
+                                peptide_with_pos.append(f"{pep} (pos: {pos})")
+
+                            def extract_position(p):
+                                m = re.search(r"pos:\s*(\d+)", p)
+                                return int(m.group(1)) if m else 999999
+
+                            available_peptides = sorted(peptide_with_pos, key=extract_position)
+
+                        # --- Continue if we have peptides ---
+                        if not available_peptides:
+                            st.warning(f"No peptides found in '{peptide_type}' column.")
+                        else:
+                            col_plot, col_opts = st.columns([1, 1])
+
+                            with col_opts:
+                                st.markdown("### ⚙️ Plot Settings")
+                                selected_peptide_with_pos = st.selectbox(f"Select Peptide ({peptide_type})", available_peptides, index=0, key="peptide_selectbox")
+                                selected_peptide = re.split(r"\s*\(pos:",selected_peptide_with_pos)[0].strip()  # Remove position for matching")
+                                plot_type = st.selectbox("Plot Type", ["Box", "Violin"], index=0, key="plot_type_selectbox")
+                                add_swarm = st.radio("Add Swarm Overlay", ["Yes", "No"], horizontal=True, index=0, key="swarm_radio")
+
+                                # Define condition1_name and condition2_name based on metadata['Group']
+                                unique_groups = metadata['Group'].dropna().unique()
+                                if len(unique_groups) >= 2:
+                                    # Default to first two groups, or let user select
+                                    condition1_name = st.selectbox("Select Group 1", unique_groups, index=0, key="condition1_selectbox")
+                                    condition2_name = st.selectbox("Select Group 2", unique_groups, index=1 if len(unique_groups) > 1 else 0, key="condition2_selectbox")
+                                else:
+                                    st.warning("Not enough unique groups in metadata. At least two groups are required.")
+                                    condition1_name = unique_groups[0] if unique_groups else "Group1"
+                                    condition2_name = unique_groups[0] if unique_groups else "Group2"
+
+                                color_group1 = st.color_picker(f"Color for {condition1_name}", "#1f77b4", key="color_group1")
+                                color_group2 = st.color_picker(f"Color for {condition2_name}", "#d62728", key="color_group2")
+                                swarm_color = st.color_picker("Swarm Dot Color", "#87CEEB", key="swarm_color")
+                                log10_checkbox = st.checkbox("Convert Intensities to log10 scale", value=True, key="log10_checkbox")
+                                show_grid = st.checkbox("Show Grid Lines", value=True, key="grid_checkbox")
+                                # --------------------------------------------------------------
+                                # 1. GLOBAL PALETTE – works for BOTH Intensity & Frequency
+                                # --------------------------------------------------------------
+                                unique_groups = metadata["Group"].dropna().unique()
+                                default_palette = sns.color_palette("tab10", n_colors=max(3, len(unique_groups)))
+                                group_colors = [default_palette[i % len(default_palette)] for i in range(len(unique_groups))]
+
+                                # override user-picked colours
+                                if condition1_name in unique_groups:
+                                    group_colors[list(unique_groups).index(condition1_name)] = color_group1
+                                if condition2_name in unique_groups:
+                                    group_colors[list(unique_groups).index(condition2_name)] = color_group2
+
+                                palette = dict(zip(unique_groups, group_colors))
+                            with col_plot:
+                                import numpy as np
+                                import pandas as pd
+
+                                # Prepare plotting data -----------------------------------------------
+                                groups_to_samples = metadata.groupby("Group")["File_Name"].apply(list).to_dict()
+                                plot_data = []
+
+                                for g, samples in groups_to_samples.items():
+                                    for s in samples:
+                                        if s not in df.columns:
+                                            continue
+                                        df_subset = selected_df[selected_df[peptide_type] == selected_peptide]
+                                        if not df_subset.empty:
+                                            vals = df_subset[s].dropna().tolist()
+                                            for v in vals:
+                                                plot_data.append([selected_peptide, g, s, v])
+
+                                df_plot = pd.DataFrame(plot_data, columns=["Peptide", "Group", "Sample", "Intensity"])
+
+                                # Prepare a default palette mapping for all known groups (from metadata)
+                                try:
+                                    all_groups = list(groups) if 'groups' in locals() else []
+                                except Exception:
+                                    all_groups = []
+                                default_colors_for_groups = sns.color_palette("tab10", n_colors=max(3, len(all_groups)))
+                                colors_for_groups_global = [default_colors_for_groups[i % len(default_colors_for_groups)] for i in range(len(all_groups))]
+                                # override colors for condition1/condition2 if present
+                                if 'condition1_name' in locals() and condition1_name in all_groups:
+                                    idx = all_groups.index(condition1_name)
+                                    colors_for_groups_global[idx] = color_group1
+                                if 'condition2_name' in locals() and condition2_name in all_groups:
+                                    idx = all_groups.index(condition2_name)
+                                    colors_for_groups_global[idx] = color_group2
+                                palette = {g: c for g, c in zip(all_groups, colors_for_groups_global)}
+
+                            # --------------------------------------------------------------
+                                # 2. PLOT MODE (Intensity vs Frequency)
+                                # --------------------------------------------------------------
+                                plot_mode = st.radio("Plot mode:", ["Intensity", "Frequency"], index=0)
+
+                                plot_container = st.container()
+                                plot_slot      = plot_container.empty()
+
+                                # ------------------------------------------------------------------
+                                # 2-a  FREQUENCY MODE
+                                # ------------------------------------------------------------------
+                                if plot_mode == "Frequency":
+                                    # ----- frequency calculation  -----
+                                    freq_mode   = st.radio(
+                                        "Frequency mode:",
+                                        ["Include zeros (NA->0 counted)", "Non-zero only (exclude blanks)"],
+                                        index=0,
+                                    )
+                                    show_percent = st.checkbox("Show as percent (0-100)", value=False,key="show_percent_checkbox")
+
+                                    freq_records = []
+                                    pep_rows = selected_df[selected_df[peptide_type] == selected_peptide]
+
+                                    for grp, sample_cols in groups_to_samples.items():
+                                        if not sample_cols:
+                                            freq_records.append({"Group": grp, "Frequency": np.nan})
+                                            continue
+
+                                        per_sample = []
+                                        for s in sample_cols:
+                                            s_vals = pd.to_numeric(pep_rows[s], errors='coerce') if s in pep_rows.columns else pd.Series(dtype=float)
+                                            orig_non_blank = s_vals.notna().any()
+                                            any_nonzero    = s_vals.fillna(0).astype(float).ne(0).any()
+                                            per_sample.append({"sample": s, "any_nonzero": any_nonzero, "orig_non_blank": orig_non_blank})
+
+                                        num_nonzero = sum(r["any_nonzero"] for r in per_sample)
+                                        denom = len(per_sample) if freq_mode.startswith("Include") else \
+                                                (sum(r["orig_non_blank"] for r in per_sample) or len(per_sample))
+
+                                        freq = float(num_nonzero) / denom if denom > 0 else np.nan
+                                        if show_percent and not pd.isna(freq):
+                                            freq *= 100.0
+                                        freq_records.append({"Group": grp, "Frequency": freq})
+
+                                    df_freq = pd.DataFrame(freq_records).set_index("Group")
+                                    st.write("Frequency of summary Peptide:", selected_peptide_with_pos)
+                                    st.dataframe(df_freq.style.format("{:.2f}" if not show_percent else "{:.1f}%"))
+
+                                    # ----- NEW FIGURE / AXIS  -----
+                                    freq_fig, freq_ax = plt.subplots(figsize=(11, 6))
+                                    freq_fig.patch.set_alpha(0.0)
+                                    freq_ax.set_facecolor((0, 0, 0, 0))
+
+                                    # ----- colours for the bar plot -----
+                                    bar_colors = [palette.get(g, default_palette[0]) for g in df_freq.index]
+
+                                    # ----- bar plot -----
+                                    bars = df_freq["Frequency"].plot(
+                                        kind="bar", color=bar_colors, ax=freq_ax,
+                                        edgecolor="white", linewidth=1.2
+                                    )
+
+                                    ylabel = "Frequency (%)" if show_percent else "Frequency"
+                                    freq_ax.set_ylabel(ylabel, fontsize=14, color="white")
+                                    freq_ax.set_xlabel("Group", fontsize=14, color="white")
+                                    freq_ax.set_ylim(0, 105 if show_percent else 1.05)
+                                    freq_ax.set_title(selected_peptide, fontsize=14, color="white",
+                                                    weight="bold", pad=12)
+                                    freq_ax.tick_params(axis="x", rotation=0, colors="white", labelsize=16)
+                                    freq_ax.tick_params(axis="y", colors="white", labelsize=16)
+
+                                    # value labels on top of bars
+                                    for p in bars.patches:
+                                        h = p.get_height()
+                                        if pd.isna(h):
+                                            continue
+                                        label = f"{h:.1f}%" if show_percent else f"{h:.2f}"
+                                        y_pos = min(h, (105 if show_percent else 1.05) * 0.98)
+                                        freq_ax.annotate(
+                                            label,
+                                            (p.get_x() + p.get_width() / 2, y_pos),
+                                            ha="center", va="bottom", fontsize=14, color="white",
+                                            xytext=(0, 3), textcoords="offset points",
+                                        )
+
+                                    freq_ax.grid(show_grid, color="white", alpha=0.3,
+                                                linestyle="--", linewidth=0.5)
+                                    sns.despine(left=False, bottom=False)
+                                    plt.subplots_adjust(top=0.88, bottom=0.15, left=0.15, right=0.95)
+                                    plt.tight_layout()
+
+                                    # ----- render + download -----
+                                    with plot_container:
+                                        plot_slot.pyplot(freq_fig)
+
+                                        buf = io.BytesIO()
+                                        freq_fig.savefig(buf, format="png", dpi=300,
+                                                        bbox_inches="tight", transparent=True)
+                                        buf.seek(0)
+
+                                        st.download_button(
+                                            label="Download Frequency Plot (PNG)",
+                                            data=buf.getvalue(),
+                                            file_name=f"frequency_{selected_peptide.replace(' ', '_')}.png",
+                                            mime="image/png",
+                                        )
+
+                                    plt.close(freq_fig)
+
+                                # ------------------------------------------------------------------
+                                # 2-b  INTENSITY MODE (Box / Violin)
+                                # ------------------------------------------------------------------
+                                else:
+                                    # ----- average duplicates per sample -----
+                                    if not df_plot.empty:
+                                        df_plot = df_plot.groupby(
+                                            ["Peptide", "Group", "Sample"], as_index=False
+                                        ).agg({"Intensity": "mean"})
+
+                                    # ----- log10 transform (optional) -----
+                                    if log10_checkbox and not df_plot.empty:
+                                        df_plot["Intensity"] = np.log10(df_plot["Intensity"] + 1)
+                                        ylabel = "log10(Intensity + 1)"
+                                    else:
+                                        ylabel = "Intensity"
+
+                                    # ----- NEW FIGURE / AXIS -----
+                                    int_fig, int_ax = plt.subplots(figsize=(8, 6))
+                                    int_fig.patch.set_alpha(0.0)
+                                    int_ax.set_facecolor((0, 0, 0, 0))
+                                    sns.set_style("whitegrid" if show_grid else "white")
+                                    sns.set_context("talk")
+
+                                    # ----- plot -----
+                                    if plot_type == "Box":
+                                        sns.boxplot(
+                                            data=df_plot, x="Group", y="Intensity", hue="Group",
+                                            palette=palette, ax=int_ax,
+                                            boxprops=dict(alpha=0.5, linewidth=1.2, edgecolor="white"),
+                                            medianprops=dict(color="black", linewidth=1.5),
+                                            linewidth=1.2,
+                                        )
+                                    else:   # Violin
+                                        sns.violinplot(
+                                            data=df_plot, x="Group", y="Intensity", hue="Group",
+                                            palette=palette, ax=int_ax, inner=None,
+                                            linewidth=1.2, cut=0, legend=False,
+                                        )
+
+                                    if add_swarm == "Yes":
+                                        sns.swarmplot(
+                                            data=df_plot, x="Group", y="Intensity",
+                                            color=swarm_color, edgecolor="white",
+                                            linewidth=0.6, alpha=0.9, size=5, ax=int_ax
+                                        )
+
+                                    int_ax.set_title(f"Peptide: {selected_peptide_with_pos}",
+                                                    fontsize=12, color="white", weight="bold", pad=10)
+                                    int_ax.set_ylabel(ylabel, fontsize=12, color="white")
+                                    int_ax.set_xlabel("Group", fontsize=12, color="white")
+                                    int_ax.tick_params(colors="white", labelsize=9)
+                                    int_ax.grid(show_grid, alpha=0.3, linestyle="--",
+                                                linewidth=0.5, color="white")
+                                    sns.despine(left=False, bottom=False)
+                                    if not df_plot.empty:
+                                        y_data = df_plot["Intensity"]
+                                        y_min, y_max = y_data.min(), y_data.max()
+                                        padding = (y_max - y_min) * 0.05
+                                        if padding == 0:  # flat data
+                                            padding = 0.1
+                                        int_ax.set_ylim(y_min - padding, y_max + padding)
+                                    #plt.subplots_adjust(left=0.15, right=0.95, top=0.9, bottom=0.15)
+
+                                    # ----- render + download -----
+                                    with plot_container:
+                                        plot_slot.pyplot(int_fig)
+
+                                        buf = io.BytesIO()
+                                        int_fig.savefig(buf, format="png", dpi=300,
+                                                        bbox_inches="tight", transparent=True)
+                                        buf.seek(0)
+
+                                        st.download_button(
+                                            label="Download Intensity Plot (PNG)",
+                                            data=buf.getvalue(),
+                                            file_name=f"intensity_{selected_peptide.replace(' ', '_')}_{plot_type.lower()}.png",
+                                            mime="image/png",
+                                        )
+
+                                    plt.close(int_fig)
+
+with quant_diff_tab:
+        st.session_state.active_quant_tab = "diff"
+        st.session_state.processed_single = {"processed": False}
+        for k, v in {
+            "diff_step1_done": False,
+            "diff_step2_done": False,
+            "diff_step3_done": False,
+            "diff_confirmed": False,
+            "diff_processed": False,
+            "diff_apply_log2": False,
+            "diff_apply_neglog10": False,
+            "diff_auto_link_transforms": True,
+            "diff_selected_protein": None,
+            "diff_base_id": None,
+            "diff_protein_seq": None,
+            "diff_seq_len": None,
+            "diff_selected_df": None,
+            "diff_residue_data": {},
+            "diff_ptm_data": {},
+            "diff_min_max_logs": {},
+            "diff_pdb_str": None,
+            "diff_plddt_list": [],
+            "diff_model_name": None,
+            "diff_mean_plddt": None,
+            "diff_conditions": [],
+            "diff_bg_color": "black",
+            "diff_cmap": "autumn",
+            "diff_selected_cmap" : "autumn",
+            "diff_not_mapped_color": "#d3d3d3",
+            "diff_visualize_by": "Fold Change",
+            "diff_gene_name": None,
+            "diff_gene_name_for": None,
+            "diff_disprot_info": None,
+            "diff_disprot_for": None,
+            "diff_view_mode": "Full Structure (All Peptides)",
+            "diff_selected_peptide": None,
+            "diff_df": None,
+            "diff_seq_records": None,
+            "diff_groups": None,
+            "diff_has_ptm": False,
+            "diff_fc_columns": [],
+            "diff_pval_columns": [],
+            "diff_matched_header": None,
+            "diff_combine_isoforms": "yes",
+            "diff_overlap_strategy": "none",
+            "diff_all_unimods": [],
+            "diff_selected_unimods": [],
+            "diff_metadata": None,
+            "diff_sample_cols": [],
+            "diff_ptm_configs" : {},
+            "apply_log2": False,
+            "apply_neglog10": False,
+            "auto_link_transforms": True,
+            "ptm_enabled" : False,
+            "apply_tryptic" : False,    
+            "proteotypic_only" : True,
+            "pdb_source" : "AlphaFold",
+            "uploaded_pdb" : None,
+
+        }.items():
+            if k not in st.session_state:
+                st.session_state[k] = v
+        st.subheader("Differential Quantitative Analysis")
+        def validate_pvalue_columns(df, pval_columns):
+                    """
+                    Runs at file upload time.
+                    Warns user if any p-value column looks wrong.
+                    """
+                    issues = []
+
+                    for col in pval_columns:
+                        if col not in df.columns:
+                            continue
+
+                        series = pd.to_numeric(df[col], errors='coerce').dropna()
+
+                        # Check for negatives → likely log-transformed
+                        n_negative = (series < 0).sum()
+                        if n_negative > 0:
+                            issues.append(
+                                f"⚠️ **`{col}`** has {n_negative} negative values — "
+                                f"likely already log-transformed. Expected raw p-values (0–1)."
+                            )
+
+                        # Check for values > 1 → invalid raw p-value
+                        n_above_one = (series > 1).sum()
+                        if n_above_one > 0:
+                            issues.append(
+                                f"⚠️ **`{col}`** has {n_above_one} values greater than 1 — "
+                                f"invalid for raw p-values."
+                            )
+
+                        # Check for zeros → will cause log10 blow up
+                        n_zeros = (series == 0).sum()
+                        if n_zeros > 0:
+                            issues.append(
+                                f"⚠️ **`{col}`** has {n_zeros} zero values — "
+                                f"will produce infinity in -log10 calculation."
+                            )
+
+                        # Check for NaNs
+                        n_nan = df[col].isna().sum()
+                        if n_nan > 0:
+                            issues.append(
+                                f"ℹ️ **`{col}`** has {n_nan} missing values — will be skipped."
+                            )
+
+                    if issues:
+                        st.error("**P-value column issues detected in uploaded file:**")
+                        for msg in issues:
+                            st.markdown(msg)
+                        st.markdown(
+                            "**Please ensure all p-value columns contain raw values between 0 and 1 "
+                            "before proceeding.**"
+                        )
+                        return False  # signal that file is not safe to process
+
+                    st.success("✅ All p-value columns validated successfully.")
+                    return True
+        with st.expander("Upload Files", expanded =not st.session_state.diff_step1_done):
+            csv_file_q = st.file_uploader("Upload Peptide Intensity CSV (e.g., Input_Two_Condition.csv)", type=["csv"], key="diff_peptide_csv_uploader")
+            fasta_file_q = st.file_uploader("Upload FASTA", type=["fasta"], key="diff_fasta_uploader")
+            metadata_file = st.file_uploader("Upload Metadata CSV (File_Name, Group, Sample_Name)", type=["csv"], key="diff_metadata_csv_uploader")
+
+            if csv_file_q and fasta_file_q and metadata_file:
+                # Read files
+                try:
+                    df = pd.read_csv(csv_file_q)
+                except Exception as e:
+                    st.error(f"Error reading Peptide CSV: {e}")
+                    st.stop()
+                try:   
+                    metadata = pd.read_csv(metadata_file)
+                except Exception as e:
+                    st.error(f"Error reading Metadata CSV: {e}")
+                    st.stop()
+                    
+                required_meta = {"File_Name", "Group", "Sample_Name"}
+                if not required_meta.issubset(set(metadata.columns)):
+                    st.error(f"Metadata CSV must contain columns: {required_meta}")
+                    st.stop()
+                if 'Protein.Group' not in df.columns or 'Stripped.Sequence' not in df.columns:
+                    st.error("Peptide CSV must contain 'Protein.Group' and 'Stripped.Sequence' columns.")
+                    st.stop()
+
+                fasta_str = fasta_file_q.getvalue().decode("utf-8")
+                fasta_handle = io.StringIO(fasta_str)
+                seq_records = list(SeqIO.parse(fasta_handle, "fasta"))
+                if not seq_records:
+                    st.error("No sequences found in FASTA file.")
+                    st.stop()
+
+                def extract_uniprot_id(header: str) -> str:
+                    parts = header.split('|')
+                    if len(parts) >= 2 and parts[0] in ('sp', 'tr'):
+                        return parts[1]
+                    return header.split()[0]
+
+                fasta_ids = [extract_uniprot_id(rec.id) for rec in seq_records]
+                fasta_with_isoform = len(fasta_ids)
+                fasta_without_isoform = len(set([fid.split('-')[0] for fid in fasta_ids]))
+
+                # Metadata: samples & groups
+                num_samples = metadata.shape[0]
+                num_groups = metadata['Group'].nunique()
+
+                prot_ids = df['Protein.Group'].dropna().astype(str).unique().tolist()
+                prot_with_isoform = len(prot_ids)
+                prot_without_isoform = len(set([p.split('-')[0] for p in prot_ids]))
+                num_peptides_raw = df['Stripped.Sequence'].notna().sum()
+                num_peptides_unique = df['Stripped.Sequence'].dropna().nunique()
+            
+                # PTM detection
+                ptm_col_candidates = [c for c in ['Modified.Sequence', 'PTM'] if c in df.columns]
+                ptm_detected = False
+                unimods = ["NA"]
+                if ptm_col_candidates:
+                    col_series = df[ptm_col_candidates[0]].dropna().astype(str)
+                    ptm_detected = col_series.str.contains('UniMod:', case=False).any()
+                    if ptm_detected:
+                        all_text = ' '.join(col_series.tolist())
+                        unimods = sorted(set(re.findall(r'UniMod:\d+', all_text)))
+                
+                st.markdown("### 🧾 File Information Summary")
+                st.info(
+                    f"**FASTA File**\n"
+                    f"- Total Proteins (without isoform): {fasta_without_isoform}\n"
+                    f"- Total Proteins (with isoform): {fasta_with_isoform}\n\n"
+                    f"**Metadata File**\n"
+                    f"- Samples Detected: {num_samples}\n"
+                    f"- Groups Detected: {num_groups}\n\n"
+                    f"**Peptide CSV File**\n"
+                    f"- Proteins Detected (without isoform): {prot_without_isoform}\n"
+                    f"- Proteins Detected (with isoform): {prot_with_isoform}\n"
+                    f"- Stripped Sequences: {num_peptides_raw} (Unique: {num_peptides_unique})\n"
+                    f"- PTM Detected: {'Yes' if ptm_detected else 'No'}\n"
+                    f"- PTM Types: {', '.join(unimods)}"
+                )
+                #sample columns
+                sample_candidates = metadata['File_Name'].astype(str).tolist()
+                df_cols = set(map(str, df.columns))
+                sample_cols = [c for c in sample_candidates if c in df_cols]
+
+                if len(sample_cols) == 0:
+                    st.error("No sample columns found matching Metadata['File_Name'].")
+                    st.stop()
+                # Differential columns
+                fc_patterns = r'(_log2FC|_FC|_logFC|FoldChange|log2FoldChange)$'
+                pval_patterns = r'(_padj|_pvalue|_adjp|_FDR|P\.Value|adj\.P\.Val)$'
+                all_cols = df.columns.tolist()
+                fc_columns = sorted([c for c in all_cols if re.search(fc_patterns, c, re.IGNORECASE)])
+                pval_columns = sorted([c for c in all_cols if re.search(pval_patterns, c, re.IGNORECASE)])
+
+                # groups from metadata
+                groups = metadata['Group'].unique().tolist()
+                # ─── ADD VALIDATION HERE ──────────────────────────────────────────
+                pval_cols_to_check = sorted([c for c in df.columns if re.search(pval_patterns, c, re.IGNORECASE)])
+                pval_validation_passed = validate_pvalue_columns(df, pval_cols_to_check)
+
+                # ── REPLACE this inside the "Confirm Files" button block ──────────────────
+
+                if st.button("Confirm Files", key="diff_confirm_files", use_container_width=True):
+                    if not pval_validation_passed:
+                        st.error("Please fix the issues with p-value columns before proceeding.")
+                    else:
+                        st.session_state.diff_df           = df
+                        st.session_state.diff_seq_records  = seq_records
+                        st.session_state.diff_groups       = groups
+                        st.session_state.diff_has_ptm      = bool(ptm_detected)
+                        st.session_state.diff_fc_columns   = fc_columns
+                        st.session_state.diff_pval_columns = pval_columns
+                        st.session_state.diff_all_unimods       = unimods if ptm_detected else []
+                        # Also populate the global UniMod list so the sidebar PTM annotation UI
+                        # becomes available while working in the differential tab.
+                        if ptm_detected:
+                            # Only set global list if it's currently empty to avoid overwriting
+                            # user selections in other workflows.
+                            if not st.session_state.get("all_unimods"):
+                                st.session_state.all_unimods = unimods
+                        
+                        # ✅ FIX: only initialize selected_unimods if it hasn't been set yet
+                        # Never overwrite it on re-confirmation — user's selections must survive
+                        if "diff_selected_unimods" not in st.session_state or st.session_state.get("diff_last_loaded_unimods") != unimods:
+                            st.session_state.diff_selected_unimods = []          # ← start with NOTHING selected
+                            st.session_state.diff_last_loaded_unimods = unimods # track which file was loaded
+                        
+                        st.session_state.diff_metadata    = metadata
+                        st.session_state.diff_sample_cols = sample_cols
+                        st.session_state.diff_step1_done  = True
+                        st.rerun()
+                        
+        with st.expander("Data Preprocessing", expanded=st.session_state.diff_step1_done and not st.session_state.diff_step2_done):
+            if not st.session_state.diff_step1_done:
+                st.info("Complete Step 1 first.")
+            else:
+                df          = st.session_state.diff_df
+                seq_records = st.session_state.diff_seq_records
+                groups      = st.session_state.diff_groups
+                fc_columns  = st.session_state.diff_fc_columns
+                pval_columns= st.session_state.diff_pval_columns
+                has_ptm     = st.session_state.diff_has_ptm
+                unimods     = st.session_state.diff_all_unimods
+                metadata    = st.session_state.diff_metadata
+                sample_cols = st.session_state.diff_sample_cols
+
+                sample_candidates = metadata['File_Name'].astype(str).tolist()
+                df_cols = set(map(str, df.columns))
+                sample_cols = [c for c in sample_candidates if c in df_cols]
+                if len(sample_cols) == 0:
+                    st.error("No sample columns found in the Peptide CSV that match Metadata['File_Name'].")
+                    st.stop()
+
+                # Map samples to groups
+                meta_map = metadata.set_index('File_Name')['Group'].to_dict()
+                groups = metadata['Group'].unique().tolist()
+                group_to_samples = {g: [s for s in sample_cols if meta_map.get(s) == g] for g in groups}
+                empty_groups = [g for g, cols in group_to_samples.items() if len(cols) == 0]
+                if empty_groups:
+                    st.warning(f"Groups with no matching sample columns: {empty_groups}")
+
+                # PTM options
+                has_ptm = st.session_state.diff_has_ptm
+                ptm_checkbox_disabled = not has_ptm
+
+                # Use the sidebar-managed mapping settings instead of local controls.
+                st.session_state.proteotypic_only = st.session_state.proteotypic_only
+                st.session_state.apply_tryptic = st.session_state.apply_tryptic
+                st.session_state.ptm_enabled = st.session_state.ptm_enabled
+
+                # Only show UniMod selection when PTM is explicitly enabled by user
+                if st.session_state.ptm_enabled and st.session_state.diff_all_unimods:
+                    st.markdown("### PTM Annotation")
+                    st.info("Use the sidebar to select UniMod IDs and configure their colors for differential analysis.")
+                    if not st.session_state.diff_selected_unimods and st.session_state.selected_unimods:
+                        st.session_state.diff_selected_unimods = [um for um in st.session_state.selected_unimods if um in st.session_state.diff_all_unimods]
+                else:
+                    st.info("No UniMod IDs detected or PTM annotation is disabled. Enable PTM annotation and select IDs in the sidebar.")
+
+                # Condition selection
+                if len(groups) < 2:
+                    st.error(f"At least two groups required. Found: {groups}")
+                    st.stop()
+
+                #available_diff_cols = sorted(set(fc_columns + pval_columns))
+
+                if not fc_columns and not pval_columns:
+                    st.error("""
+                    No differential result columns detected in the uploaded CSV.
+                    
+                    Please include at least one column matching these patterns:
+                    • Fold Change:   ..._log2FC, ..._FC, ..._logFC
+                    • P-value:       ..._padj, ..._pvalue, ..._adjp
+                    Please uppload a file with pre-computed differential results.""")
+                    st.stop()
+
+                st.markdown("### Detected Differential Columns")
+                if fc_columns:
+                    st.info("Fold change columns:\n" + "\n".join(f"- {c}" for c in fc_columns) if fc_columns else "None found")
+                if pval_columns:
+                    st.info("P-value columns:\n" + "\n".join(f"- {c}" for c in pval_columns) if pval_columns else "None found")
+
+                # Let user choose which ones to visualize
+                #selected_columns = st.multiselect(
+                    #"Select differential columns to visualize (1–5 recommended)",
+                    #options=available_diff_cols,
+                    #default=available_diff_cols[:min(3, len(available_diff_cols))],
+                    #key="diff_selected_columns"
+                #)
+
+                #if not selected_columns:
+                    #st.warning("Please select at least one differential column to proceed.")
+                    #st.stop()
+
+                #conditions = selected_columns
+                if st.button("Confirm Analysis Options", use_container_width=True, key="diff_confirm_options"):
+                    st.session_state.diff_step2_done = True
+                    st.rerun()
+        with st.expander("Condition/Group Selection",expanded=st.session_state.diff_step2_done and not st.session_state.diff_step3_done):
+            if not st.session_state.diff_step2_done:
+                st.info("Complete Step 2 first.")
+            else:
+                df           = st.session_state.diff_df
+                fc_columns   = st.session_state.diff_fc_columns
+                pval_columns = st.session_state.diff_pval_columns
+
+                # Check and compute p-values only if missing
+            
+                visualize_by = st.radio("Visualize by:", ["Fold Change", "P-value"], horizontal=True, key="visualize_by_radio_diff")
+                # Set the active list of columns based on choice
+                if visualize_by == "Fold Change":
+                    conditions = fc_columns
+                    if not conditions:
+                        st.error("No fold change columns detected. Cannot proceed in Fold Change mode.")
+                        st.stop()
+                else:
+                    conditions = pval_columns
+                    if not conditions:
+                        st.error("No p-value columns detected. Cannot proceed in P-value mode.")
+                        st.stop()
+
+                st.info(f"Will visualize **{len(conditions)}** {visualize_by.lower()} comparisons:")
+                st.write(", ".join(conditions))
+                apply_log2 = False
+                show_log2_checkbox = False
+
+                if visualize_by == "Fold Change" and conditions:
+                    # Heuristic: check if ANY column name suggests it's already log₂ transformed
+                    log2_indicators = [
+                        '_log2fc', '_log2FC', 'log2foldchange', 'log2_foldchange',
+                        'log2_fc', 'log2-foldchange', 'log2 fold change'
+                    ]
+                    
+                    is_already_log2 = any(
+                        any(indicator in col.lower() for indicator in log2_indicators)
+                        for col in conditions
+                    )
+                    
+                    if is_already_log2:
+                        show_log2_checkbox = False
+                        apply_log2 = False
+                        st.info("Detected **log₂-transformed** fold changes → no additional transformation needed.")
+                    else:
+                        show_log2_checkbox = True
+                        apply_log2 = True  # default: apply log2 (most common case)
+                        st.info("Fold changes appear to be **raw ratios** → log₂ transformation option enabled.")
+                apply_neglog10 = False
+                show_neglog10_checkbox = False
+
+                if visualize_by == "P-value" and conditions:
+                    neglog10_indicators = [
+                        '-log10p', 'neglog10p', 'log10pvalue', 'log10pval', 
+                        '-log10_p', 'neg_log10p', '-log10(p)', 'log10(pvalue)'
+                    ]
+                        
+                    is_already_neglog10 = any(
+                        any(ind in col.lower() for ind in neglog10_indicators)
+                        for col in conditions
+                    )
+                        
+                    if is_already_neglog10:
+                        show_neglog10_checkbox = False
+                        apply_neglog10 = False
+                        st.info("Detected **-log₁₀-transformed** p-values → no transformation needed.")
+                    else:
+                        show_neglog10_checkbox = True
+                        apply_neglog10 = True  # default = apply -log10
+                        st.info("P-values appear to be **raw probabilities** → -log₁₀ transformation option enabled.")
+                
+                apply_log2 = st.session_state.get("diff_apply_log2", False)
+                apply_neglog10 = st.session_state.get("diff_apply_neglog10", False)
+                if  show_log2_checkbox:
+                    st.session_state.diff_apply_log2 = st.checkbox(
+                        "Apply log₂ transformation to Fold Changes",
+                        value=st.session_state.diff_apply_log2,
+                        key="apply_log2_checkbox_diff",
+                        help="Check if your fold changes are raw ratios (e.g. 2.0 = 2-fold up). Uncheck if already log₂-transformed."
+                    )
+                    apply_log2 = st.session_state.diff_apply_log2
+                if  show_neglog10_checkbox:
+                    st.session_state.diff_apply_neglog10 = st.checkbox(
+                        "Apply -log₁₀ transformation to P-values",
+                        value=st.session_state.diff_apply_neglog10,
+                        key="apply_neglog10_checkbox_diff",
+                        help="Check if your p-values are raw probabilities (e.g. 0.05). Uncheck if already -log₁₀-transformed."
+                    )
+                    apply_neglog10 = st.session_state.diff_apply_neglog10
+                # ─── Automatic linking (run EARLY to set values before checkboxes) ────────────────────────────────
+                auto_link = st.checkbox(
+                    "Automatically link transformations (log₂ FC ↔ -log₁₀ P-value)",
+                    value=st.session_state.diff_auto_link_transforms,
+                    key="auto_link_checkbox_diff",
+                    help="When enabled, checking one auto-applies the other."
+                )
+                st.session_state.diff_auto_link_transforms = auto_link
+
+                if auto_link:
+                    # Bidirectional: FC log₂ → p-value -log₁₀, and vice versa
+                    if st.session_state.diff_apply_log2:
+                        st.session_state.diff_apply_neglog10 = True
+                        st.info("Auto-linked: Applied -log₁₀ to P-values (scatter plot updated).")
+
+                    if st.session_state.diff_apply_neglog10:
+                        st.session_state.diff_apply_log2 = True
+                        st.info("Auto-linked: Applied log₂ to Fold Changes (scatter plot updated).")        
+                st.info("Now select protein and options.")
+                protein_options = sorted(df['Protein.Group'].unique())
+                # Present local protein selector here (under the differential workflow UI)
+                selected_protein = st.selectbox("Select Protein", protein_options, key="diff_protein_select")
+                # Keep mapping rules & PTM toggles in the sidebar (global state)
+                combine_isoforms = st.session_state.combine_isoforms
+                overlap_strategy = st.session_state.overlap_strategy
+                # PDB source selection is managed in the sidebar
+                st.markdown(
+                    f'<div style="text-align:left; margin-bottom:10px;">'
+                    f'<span style="font-size:16px; color:#FFFFFF;">Databases: </span>'
+                    f'<a href="https://alphafold.ebi.ac.uk/" target="_blank" style="font-size:16px; color:Var(--color-text-primary); text-decoration:underline;">AlphaFold Database</a>'
+                    f' | '
+                    f'<a href="https://esmatlas.com/resources?action=fold" target="_blank" style="font-size:16px; color:Var(--color-text-primary); text-decoration:underline;">ESM Atlas</a>'
+                    f' | '
+                    f'<a href="https://build.nvidia.com/mit/boltz2" target="_blank" style="font-size:16px; color:Var(--color-text-primary); text-decoration:underline;">NVIDIA Boltz-2</a>'
+                    f' | '
+                    f'<a href="https://www.rcsb.org/" target="_blank" style="font-size:16px; color:Var(--color-text-primary); text-decoration:underline;">RCSB PDB</a>'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+                st.markdown("### Structure Source")
+                st.info("PDB source and upload are managed in the sidebar.")
+                
+                if st.button("Process Protein", use_container_width=True,key="process_protein_diff"):
+                    st.session_state.diff_selected_protein    = selected_protein
+                    st.session_state.diff_visualize_by        = visualize_by
+                    st.session_state.diff_conditions          = conditions
+                    #st.session_state.diff_combine_isoforms    = combine_isoforms
+                    #st.session_state.diff_overlap_strategy    = overlap_strategy
+                    st.session_state.diff_apply_log2          = st.session_state.get("diff_apply_log2", False)
+                    st.session_state.diff_apply_neglog10      = st.session_state.get("diff_apply_neglog10", False)
+                    st.session_state.diff_step3_done          = True
+                    st.session_state.diff_processed          = False  
+                    st.rerun()
+
+        with st.expander("Protein of Interest",expanded=st.session_state.get("diff_step3_done", False) and not st.session_state.get("diff_processed", False)):
+            if not st.session_state.diff_step3_done:
+                    st.info("Complete Step 3 first.")
+            else:
+                if st.session_state.get("diff_seq_records") is None:
+                    st.error("FASTA sequences not loaded. Please go back to Step 1.")
+                    st.stop()
+
+                if "diff_selected_protein" not in st.session_state or not st.session_state.diff_selected_protein:
+                    st.error("No protein selected. Please go back to Step 3.")
+                    st.stop()
+                # Pull all saved state
+                df               = st.session_state.diff_df
+                seq_records      = st.session_state.diff_seq_records
+                has_ptm          = st.session_state.diff_has_ptm
+                selected_protein = st.session_state.diff_selected_protein
+                visualize_by     = st.session_state.diff_visualize_by
+                conditions       = st.session_state.diff_conditions
+                combine_isoforms = st.session_state.diff_combine_isoforms
+                overlap_strategy = st.session_state.diff_overlap_strategy
+                has_ptm          = st.session_state.diff_has_ptm
+                apply_log2       = st.session_state.diff_apply_log2
+                apply_neglog10   = st.session_state.diff_apply_neglog10
+                
+                base_id          = selected_protein.split('-')[0]
+
+                protein_seq = None
+                matched_header="Not Found"
+                for rec in seq_records:
+                    header = rec.id    
+                    candidate = header.split('|')[1] if '|' in header and header.split('|')[0] in ('sp', 'tr') else header.split()[0]
+                    if candidate.split('-')[0] == base_id:
+                        protein_seq = str(rec.seq)
+                        matched_header = header
+                        st.success(f"Matched by ID: {header}")
+                        break
+                
+                # Isoform handling
+                isoforms = df[df['Protein.Group'].str.contains(selected_protein + r'(?:-\d+)?$', regex=True)]['Protein.Group'].unique()
+                if len(isoforms) > 1 and combine_isoforms == "yes":
+                    st.info("Isoforms Detected")
+                    selected_groups = list(isoforms)
+                elif len(isoforms) > 1 and combine_isoforms == "no":
+                    selected_groups = st.multiselect("Select Isoforms", options=list(isoforms), default=list(isoforms))
+                else:
+                    selected_groups = list(isoforms)
+                
+                if not selected_groups:
+                    st.error("No isoforms selected.")
+                    st.stop()
+                
+                selected_df = df[df['Protein.Group'].isin(selected_groups)] 
+                if protein_seq is None:
+                    st.info(f"No direct FASTA header match for {base_id}. Attempting peptide-based matching...")
+                    peptides_unique = selected_df['Stripped.Sequence'].dropna().astype(str).str.strip().str.upper().unique().tolist()
+                    peptides_unique = [p for p in peptides_unique if len(p) >= 7]
+
+                    best_rec = None
+                    best_count = 0
+
+                    for rec in seq_records:
+                        seq_str = str(rec.seq).upper()
+                        count = sum(1 for p in peptides_unique if p in seq_str)
+                        if count > best_count:
+                            best_count = count
+                            best_rec = rec
+
+                    if best_count >= 2:  # at least 2 peptides = reliable
+                        protein_seq = str(best_rec.seq)
+                        matched_header = best_rec.id
+                        st.success(f"Best match: {matched_header} ({best_count} peptides matched)")
+                    elif len(seq_records) == 1:
+                        protein_seq = str(seq_records[0].seq)
+                        matched_header = seq_records[0].id
+                        st.warning(f"Only one FASTA entry → using: {matched_header}")
+                    else:
+                        st.error(f"Could not match protein sequence. Check FASTA headers or peptide data.")
+                        st.stop()
+
+                seq_len = len(protein_seq)
+                # CRITICAL: SAVE TO SESSION STATE SO SUMMARY CAN SEE IT!
+                st.session_state.diff_protein_seq = protein_seq
+                #st.session_state.selected_protein = selected_protein
+                st.session_state.diff_matched_header = matched_header
+                st.session_state.diff_base_id = base_id
+                st.session_state.diff_seq_len = seq_len
+                st.session_state.diff_selected_df = selected_df
+                
+                peptide_data = {}
+                residue_data = {cond: [None] * seq_len for cond in conditions}
+                ptm_data = {cond: {} for cond in conditions}
+                min_max_logs = {}
+                ptm_col = 'Modified.Sequence' if st.session_state.ptm_enabled and has_ptm else None
+
+                st.session_state.selected_df = selected_df
+
+                for condition in conditions:
+                    intensity_col = condition
+                    # ← PASS ptm_col only if enabled!
+                    ptm_col_to_use = 'Modified.Sequence' if st.session_state.ptm_enabled and has_ptm else None
+                    residues, ptms = map_peptides_to_residues(
+                        selected_df, protein_seq, intensity_col, overlap_strategy,
+                        ptm_col=ptm_col_to_use, apply_tryptic=st.session_state.apply_tryptic
+                    )
+                    # Transform values
+                    if visualize_by == "Fold Change":
+                        if apply_log2:
+                            residues = [np.log2(v) if v is not None and np.isfinite(v) and v > 0 else None for v in residues]
+                    else:#p-value
+                        if apply_neglog10:
+                            residues = [-np.log10(v) if v is not None and np.isfinite(v) and v > 0 else None for v in residues]
+                    residue_data[condition] = residues
+                    # Build full PTM dict with config
+                    ptm_data[condition] = {}
+                    if st.session_state.ptm_enabled:
+                        for um, positions in ptms.items():
+                            if um not in st.session_state.selected_unimods:
+                                continue
+                            config = st.session_state.ptm_configs.get(um, {})
+                            ptm_data[condition][um] = {
+                                'positions': sorted(list(positions)),
+                                'selected': config.get('selected', True),
+                                'color': config.get('color', '#3700FF'),
+                                'label': config.get('label', um)
+                            }
+                
+                    covered = [v for v in residues if v is not None]
+                    if not covered:
+                        st.error(f"No peptides mapped for {condition}.")
+                        st.stop()
+                    min_max_logs[condition] = (min(covered), max(covered))
+                    peptides = selected_df.groupby('Stripped.Sequence')[intensity_col].mean().reset_index()
+                    peptide_data[condition] = peptides
+                
+                st.subheader("Detected Sequence")
+                st.markdown(f"**FASTA header:** {matched_header}")
+                seq_html = format_sequence_for_display(protein_seq, residue_data, conditions, line_len=150, group=20)
+                copy_html = sequence_copy_component(protein_seq)
+                st.components.v1.html(copy_html + seq_html, height=320)
+                
+                # PDB fetching or upload (same as multi)
+                if st.session_state.pdb_source == "AlphaFold":
+                    pdb_url = f"https://alphafold.ebi.ac.uk/files/AF-{base_id}-F1-model_v6.pdb"
+                    with st.spinner(f"Attempting to fetch AlphaFold v6 structure for {base_id}..."):
+                        try:
+                            r = requests.get(pdb_url, timeout=30)
+                            if r.status_code == 200:
+                                pdb_str = r.text
+                            elif r.status_code == 404:
+                                st.error("Model_v6 not found. The protein may not have a v6 structure yet.")
+                                st.stop()
+                            else:
+                                st.error(f"PDB fetch failed (status {r.status_code}).")
+                                st.stop()
+                        except requests.exceptions.RequestException as e:
+                            st.error(f"Failed to fetch PDB for {base_id}: {str(e)}.")
+                            st.stop()
+                else:  # Upload PDB
+                    if st.session_state.uploaded_pdb is None:
+                        st.error("No PDB file uploaded.")
+                        st.stop()
+                    # Validate filename
+                    pdb_filename = st.session_state.uploaded_pdb.name
+                    if not pdb_filename.endswith('.pdb'):
+                        st.error("Uploaded file must have a .pdb extension.")
+                        st.stop()
+                    filename_id = pdb_filename[:-4]  # Remove .pdb extension
+                    if filename_id != base_id:
+                        st.error(f"PDB filename ({pdb_filename}) must match the selected protein's UniProt ID ({base_id}).")
+                        st.stop()
+                    try:
+                        pdb_str = st.session_state.uploaded_pdb.getvalue().decode("utf-8")
+                    except Exception as e:
+                        st.error(f"Error reading uploaded PDB file: {e}")
+                        st.stop()
+                
+                st.success(f"Loaded {'AlphaFold' if st.session_state.pdb_source == 'AlphaFold' else 'uploaded'} structure for {base_id} ({len(pdb_str)} bytes)")
+                plddt_list, model_name, mean_plddt = extract_plddt_and_model(pdb_str, protein_seq)
+                mean_plddt_display = f"{mean_plddt:.1f}" if mean_plddt is not None else "N/A"
+                st.info(f"**Mean pLDDT:** {mean_plddt_display} (Overall Confidence)")
+                st.info("Appearance settings are managed in the sidebar.")
+
+                st.subheader("PhosphoSitePlus®")
+                with st.spinner(f"Fetching gene name for {base_id}"):
+                    try:
+                        uniprot_url = f"https://rest.uniprot.org/uniprotkb/{base_id}"
+                        response = requests.get(uniprot_url, timeout=10)
+                        if response.status_code == 200:
+                            uniprot_data = response.json()
+                            gene_name = uniprot_data.get('genes', [{}])[0].get('geneName', {}).get('value', 'Unknown')
+                        else:
+                            gene_name = 'Unknown'
+                    except Exception as e:
+                        gene_name = 'Unknown'
+                        st.warning(f"Failed to fetch gene name for {base_id}: {e}")
+                if gene_name != 'Unknown':
+                    phosphosite_url = f"https://www.phosphosite.org/simpleSearchSubmitAction.action?searchStr={gene_name}"
+                    st.markdown(
+                        f'<span style="font-size:20px; color:#FFFFFF;">Explore PhosphoSitePlus® : </span>'
+                        f'<a href="{phosphosite_url}" target="_blank" style="font-size:20px; color:Var(--color-text-primary); text-decoration:underline;">{base_id}|{gene_name}</a>',
+                        unsafe_allow_html=True
+                    )
+                else:
+                    st.markdown(
+                        f'<span style="font-size:20px; color:#FFFFFF;">Explore PhosphoSitePlus® : </span>'
+                        f'<span style="font-size:20px; color:#FFFFFF;">No gene name found for {base_id}. Unable to generate PhosphoSitePlus link.</span>',
+                        unsafe_allow_html=True
+                    )
+                st.session_state.diff_residue_data   = residue_data
+                st.session_state.diff_ptm_data       = ptm_data
+                st.session_state.diff_pdb_str        = pdb_str
+                st.session_state.diff_plddt_list     = plddt_list
+                st.session_state.diff_model_name     = model_name        
+                st.session_state.diff_mean_plddt     = mean_plddt       
+                st.session_state.diff_protein_seq    = protein_seq
+                st.session_state.diff_seq_len        = seq_len
+                st.session_state.diff_base_id        = base_id
+                st.session_state.diff_min_max_logs   = min_max_logs
+                st.session_state.diff_selected_df    = selected_df        
+                st.session_state.diff_processed      = True
+            
+            #PTM CONFIG — outside processing block, always renders
+            if (
+                st.session_state.get("diff_processed", False)
+                and st.session_state.get("ptm_enabled", False)
+                and st.session_state.get("diff_selected_unimods")
+            ):
+                if "ptm_configs" not in st.session_state:
+                    st.session_state.ptm_configs = {}
+                for um in st.session_state.diff_selected_unimods:
+                    if um not in st.session_state.ptm_configs:
+                        st.session_state.ptm_configs[um] = {
+                            "selected": True,
+                            "label": um,
+                            "color": "#3700FF"
+                        }
+
+                # Propagate into already-computed ptm_data — no reprocessing needed
+                for cond in st.session_state.get("diff_conditions", []):
+                    for um, entry in st.session_state.diff_ptm_data.get(cond, {}).items():
+                        if um in st.session_state.ptm_configs:
+                            cfg = st.session_state.ptm_configs[um]
+                            entry["color"]    = cfg["color"]
+                            entry["label"]    = cfg["label"]
+                            entry["selected"] = cfg["selected"]
+                        
+        with st.expander("Mapping & Structure Visualizations", expanded=st.session_state.diff_processed):
+            if not st.session_state.diff_processed:
+                st.info("Complete Step 4 first.")
+            else:
+                # ── Pull everything from session state (set in Step 4) ──────────────
+                pdb_str       = st.session_state.diff_pdb_str
+                residue_data  = st.session_state.diff_residue_data
+                ptm_data      = st.session_state.diff_ptm_data
+                protein_seq   = st.session_state.diff_protein_seq
+                seq_len       = st.session_state.diff_seq_len
+                conditions    = st.session_state.diff_conditions
+                base_id       = st.session_state.diff_base_id
+                min_max_logs  = st.session_state.diff_min_max_logs
+                selected_df   = st.session_state.diff_selected_df
+                has_ptm       = st.session_state.diff_has_ptm
+                visualize_by  = st.session_state.diff_visualize_by
+                plddt_list    = st.session_state.diff_plddt_list
+                model_name    = st.session_state.diff_model_name
+                mean_plddt    = st.session_state.diff_mean_plddt
+                overlap_strategy = st.session_state.diff_overlap_strategy
+
+
+                # ── pLDDT info ──────────────────────────────────────────────────────
+                mean_plddt_display = f"{mean_plddt:.1f}" if mean_plddt is not None else "N/A"
+                st.info(f"**Mean pLDDT:** {mean_plddt_display} (Overall Confidence)")
+
+                # Compute peptide start positions directly from protein sequence
+                def compute_positions_with_label(peptide_list):
+                    result = {}
+                    for pep in peptide_list:
+                        pep = str(pep).strip()
+                        if pep == "":
+                            continue
+                        pos = find_peptide_position(protein_seq, pep)
+                        label = f"{pep} (pos: {pos})"
+                        result[pep] = (pos,label)
+                    return result
+                # ---- Unique peptides for dropdowns (FIXED & ROBUST) ----
+                stripped_unique = selected_df["Stripped.Sequence"].dropna().astype(str).unique().tolist()
+                # === MODIFIED SEQUENCE: ONLY THOSE WITH ACTUAL PTMs ===
+                if (st.session_state.ptm_enabled and 
+                    st.session_state.diff_selected_unimods and 
+                    "Modified.Sequence" in selected_df.columns):
+
+                    # regex pattern for selected UniMods only
+                    pattern = '|'.join([re.escape(f"UniMod:{um.split(':')[-1]}") for um in st.session_state.diff_selected_unimods])
+                    
+                    mod_mask = selected_df["Modified.Sequence"].astype(str).str.contains(pattern, case=False, na=False)
+                    filtered_modified_df = selected_df.loc[mod_mask]
+
+                    if filtered_modified_df.empty:
+                        st.warning("No peptides found with the selected UniMod(s) — falling back to stripped sequences for dropdown.")
+                        modified_unique = stripped_unique
+                    else:
+                        modified_unique = filtered_modified_df["Modified.Sequence"].dropna().astype(str).unique().tolist()
+                else:
+                    # PTM disabled or no UniMod selected → fallback
+                    modified_unique = stripped_unique
+
+                # Now compute positions exactly like you do in the quant tab
+                def compute_positions_with_label(peptide_list):
+                    result = {}
+                    for pep in peptide_list:
+                        pep_str = str(pep).strip()
+                        if not pep_str:
+                            continue
+                        pos = find_peptide_position(protein_seq, pep_str)
+                        label = f"{pep_str} (pos: {pos})"
+                        result[pep_str] = (pos, label)
+                    return result
+
+                stripped_positions = compute_positions_with_label(stripped_unique)
+                modified_positions  = compute_positions_with_label(modified_unique)  # ← now only real modified peptides!
+
+                # Sort by position (same as before)
+                def sort_labels_by_position(pos_dict):
+                    sorted_items = sorted(pos_dict.items(), key=lambda x: x[1][0] if x[1][0] != -1 else 999999)
+                    return [label for _, (_, label) in sorted_items]
+
+                stripped_sorted_labels  = sort_labels_by_position(stripped_positions)
+                modified_sorted_labels  = sort_labels_by_position(modified_positions)  # ← clean & correct!
+            
+                # === Session state initialization ===
+                if "diff_view_mode" not in st.session_state:
+                    st.session_state.diff_view_mode = "Full Structure (All Peptides)"
+                if "diff_selected_peptide" not in st.session_state:
+                    st.session_state.diff_selected_peptide = None
+
+                st.markdown("#### Peptide View Mode")
+                view_mode = st.radio(
+                    "Choose visualization mode:",
+                    options=[
+                        "Full Structure (All Peptides)",
+                        "View by Stripped Sequence",
+                        "View by Modified Sequence"
+                    ],
+                    index=["Full Structure (All Peptides)", "View by Stripped Sequence", "View by Modified Sequence"]
+                        .index(st.session_state.diff_view_mode),
+                    key="view_mode_radio_diff",
+                    horizontal=True
+                )
+
+                if view_mode != st.session_state.diff_view_mode:
+                    st.session_state.diff_view_mode = view_mode
+                    st.session_state.diff_selected_peptide = None
+                    st.rerun()
+
+                selected_peptide = None
+                show_full = (st.session_state.diff_view_mode == "Full Structure (All Peptides)")
+
+                # === Peptide selector ===
+                if st.session_state.diff_view_mode == "View by Stripped Sequence":
+                    peptide_options = stripped_sorted_labels
+                    selected_label = st.selectbox(
+                        "Select a stripped peptide to highlight:",
+                        options=peptide_options,
+                        index=0 if st.session_state.diff_selected_peptide not in stripped_positions else peptide_options.index(next(label for pep,(pos,label) in stripped_positions.items()if pep==st.session_state.diff_selected_peptide)),
+                        key="stripped_selector_diff"
+                    )
+                    selected_peptide = re.split(r"\s*\(pos:", selected_label)[0].strip()
+                    st.session_state.diff_selected_peptide = selected_peptide
+                    st.info(f"Showing peptide: **{selected_label}**")
+                    
+                elif st.session_state.diff_view_mode == "View by Modified Sequence":
+                    peptide_options = modified_sorted_labels
+                    selected_label = st.selectbox(
+                        "Select a modified peptide to highlight:",
+                        options=peptide_options,
+                        index=0 if st.session_state.diff_selected_peptide not in modified_positions else
+                            peptide_options.index(next(label for pep, (pos, label) in modified_positions.items() if pep == st.session_state.diff_selected_peptide)),
+                        key="modified_selector_diff"
+                    )
+                    selected_peptide = re.split(r"\s*\(pos:", selected_label)[0].strip()
+                    st.session_state.diff_selected_peptide = selected_peptide
+                    st.info(f"Showing modified peptide: **{selected_label}**")
+
+                else:
+                    st.success("Showing all mapped peptides on the protein structure")
+
+                # === BUILD RESIDUE DATA FOR VISUALIZATION ===
+                if show_full:
+                    viewer_residue_data = [residue_data[cond] for cond in conditions]
+                    viewer_ptm_data = [ptm_data[cond] for cond in conditions]  # Use full PTM data for all viewers
+                else:
+                    target_peptide = selected_peptide
+                    use_modified = (st.session_state.diff_view_mode == "View by Modified Sequence")
+                    filter_col = 'Modified.Sequence' if use_modified else 'Stripped.Sequence'
+
+                    #peptide_rows = selected_df[selected_df[filter_col] == target_peptide]
+
+                    #if peptide_rows.empty:
+                        #st.error(f"Selected peptide not found in current data.")
+                        #st.stop()
+                    target_clean = str(target_peptide).strip()
+
+                    if 'Stripped.Sequence_clean' not in selected_df.columns:
+                        selected_df['Stripped.Sequence_clean'] = selected_df['Stripped.Sequence'].astype(str).str.strip()
+                    if 'Modified.Sequence_clean' not in selected_df.columns and 'Modified.Sequence' in selected_df.columns:
+                        selected_df['Modified.Sequence_clean'] = selected_df['Modified.Sequence'].astype(str).str.strip()
+
+                    clean_col = 'Stripped.Sequence_clean' if filter_col == 'Stripped.Sequence' else 'Modified.Sequence_clean'
+                    peptide_rows = selected_df[selected_df[clean_col] == target_clean]
+
+                    if peptide_rows.empty and clean_col in selected_df.columns:
+                        peptide_rows = selected_df[selected_df[clean_col].str.contains(target_clean, na=False)]
+                        if peptide_rows.empty:
+                            st.error(f"No data found for peptide: **{target_peptide}**. Check the selected peptide or the dataset.")
+                            st.stop()
+                        st.warning(f"Using partial match for peptide: **{target_peptide}** ({len(peptide_rows)} rows found)")
+
+                    viewer_residue_data = []
+                    viewer_ptm_data = []  # Clear & build fresh
+
+                    for condition in conditions:
+                        single_residue_list = [None] * len(protein_seq)
+                        #suffix = "_FC" if visualize_by == "Fold Change" else "_pvalue"
+                        intensity_col = condition
+
+                        ptm_col_to_use = 'Modified.Sequence' if st.session_state.ptm_enabled and has_ptm else None
+
+                        residues_temp, ptms_temp = map_peptides_to_residues(
+                            peptide_rows,
+                            protein_seq,
+                            intensity_col,
+                            overlap_strategy,
+                            ptm_col=ptm_col_to_use,
+                            apply_tryptic=st.session_state.apply_tryptic
+                        )
+
+                        # Transform
+                        #if visualize_by == "Fold Change":
+                            #residues_temp = [np.log2(v) if v is not None and np.isfinite(v) and v > 0 else None for v in residues_temp]
+                        #else:
+                            #residues_temp = [-np.log10(v) if v is not None and np.isfinite(v) and v > 0 else None for v in residues_temp]
+                        # Transform only if user requested it
+                        if visualize_by == "Fold Change" and st.session_state.diff_apply_log2:
+                            temp_residues = [np.log2(v) if v is not None and np.isfinite(v) and v > 0 else None for v in temp_residues]
+                        elif visualize_by == "P-value" and st.session_state.diff_apply_neglog10:
+                            temp_residues = [-np.log10(v) if v is not None and np.isfinite(v) and 0 < v <= 1 else None for v in temp_residues]
+                        # else: keep original values (already transformed or user unchecked)
+                        for i, val in enumerate(temp_residues):
+                            if val is not None:
+                                single_residue_list[i] = val
+
+                        viewer_residue_data.append(single_residue_list)
+
+                        # Handle PTMs: build condition_ptm even if intensity missing (PTMs are peptide-intrinsic)
+                        condition_ptm = {}
+                        if st.session_state.ptm_enabled and ptms_temp:
+                            for um, positions in ptms_temp.items():
+                                if um not in st.session_state.selected_unimods:
+                                    continue
+                                config = st.session_state.ptm_configs.get(um, {})
+                                condition_ptm[um] = {
+                                    'positions': sorted(list(positions)),
+                                    'selected': config.get('selected', True),
+                                    'color': config.get('color', '#3700FF'),
+                                    'label': config.get('label', um)
+                                }
+
+                        viewer_ptm_data.append(condition_ptm)  # ONLY append once per condition!
+                
+                peptide_atlas_url = f"https://db.systemsbiology.net/sbeams/cgi/PeptideAtlas/GetProtein?atlas_build_id=592&protein_name={base_id}&action=QUERY"
+                st.markdown(
+                    f'<span style="font-size:20px; color:#FFFFFF;">Explore PeptideAtlas : </span>'
+                    f'<a href="{peptide_atlas_url}" target="_blank" style="font-size:16px; color:Var(--color-text-primary); text-decoration:underline;">Explore Peptides of {base_id} in Peptide Atlas</a>'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+                # Above "3D Structure Visualizations" header
+                alphafold_url = f"https://alphafold.ebi.ac.uk/search/text/{base_id}"
+                st.markdown(
+                    f'<span style="font-size:20px; color:#FFFFFF;">Explore AlphaFold DB : </span>'
+                    f'<a href="{alphafold_url}" target="_blank" style="font-size:16px; color:Var(--color-text-primary); text-decoration:underline;">View {base_id} in AlphaFold Database</a>'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+                # ---------- DisProt ---------- (same as multi)
+                disprot_info   = get_disprot_info(base_id)
+                disorder_percent = disprot_info.get("disorder_percent")
+                link           = disprot_info.get("link", "#")
+                link_text      = disprot_info.get("link_text", f"Search {base_id} in DisProt")
+                link_html      = f'<a href="{link}" target="_blank">{link_text}</a>'
+
+                if not disprot_info.get("found", False):
+                    # Distinguish network failure from genuine absence
+                    lt = disprot_info.get("link_text", "")
+                    if any(k in lt for k in ("error", "unreachable", "timed out", "SSL")):
+                        st.error(
+                            f"⚠️ Could not reach DisProt for **{base_id}**. "
+                            f"This is a network/connectivity issue, not a missing entry. "
+                            f"Try again or check your internet connection."
+                        )
+                    else:
+                        st.warning(
+                            f"**{base_id}** has no entry in DisProt. "
+                            f"It may not have been experimentally characterised yet."
+                        )
+
+                elif disorder_percent is None:
+                    st.info(
+                        f"**{base_id}** is in DisProt (ID: {disprot_info.get('disprot_id')}) "
+                        f"but the disorder content percentage is unavailable."
+                    )
+
+                elif disorder_percent >= 30.0:
+                    st.success(
+                        f"✅ **{base_id}** is a **disordered protein**  \n"
+                        f"Disorder content: **{disorder_percent:.1f}%**"
+                    )
+
+                else:
+                    st.warning(
+                        f"**{base_id}** is **not considered disordered**  \n"
+                        f"Disorder content: **{disorder_percent:.1f}%** (threshold: 30%)"
+                    )
+
+                # Always show DisProt link
+                st.markdown(f"🔗 Explore DisProt: {link_html}", unsafe_allow_html=True)
+                
+                # ---- NEW: also normalize the protein-level fallback ----
+                if 'protein_ptms' in locals() and protein_ptms:
+                    protein_ptms = normalize_ptm_data(protein_ptms)
+                
+                selected_cmap = st.session_state.cmap
+                selected_not_mapped_color = st.session_state.not_mapped_color
+                render_synced_viewers(pdb_str, viewer_residue_data, st.session_state.bg_color, conditions, selected_cmap, selected_not_mapped_color, viewer_ptm_data)
+                st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
+                
+                # Calculate coverage for each condition
+                coverages = {}
+                for cond in conditions:
+                    coverages[cond] = (sum(1 for v in residue_data[cond] if v is not None) / seq_len * 100) if seq_len > 0 else 0
+                
+                # ======================================================
+                #              LINEAR SEQUENCE VISUALIZATIONS
+                # ======================================================
+                st.subheader("Linear Sequence Visualizations")
+
+                view_mode = st.session_state.diff_view_mode
+                selected_peptide = st.session_state.diff_selected_peptide
+
+                # Decide what to show based on 3D selection
+                if view_mode == "Full Structure (All Peptides)" or selected_peptide is None:
+                    # Show all peptides — default behavior
+                    linear_residue_data = residue_data
+                    linear_ptm_data = ptm_data
+                    st.info("Linear plots show all mapped peptides.")
+
+                else:
+                    # SHOW ONLY *ONE* PEPTIDE
+                    st.success(f"Linear plots show only peptide: **{selected_peptide}**")
+
+                    # Determine whether to filter on stripped or modified sequence
+                    filter_col = (
+                        "Modified.Sequence" if view_mode == "View by Modified Sequence"
+                        else "Stripped.Sequence"
+                    )
+
+                    peptide_rows = selected_df[selected_df[filter_col] == selected_peptide]
+
+                    if peptide_rows.empty:
+                        st.error(f"Selected peptide '{selected_peptide}' not found in data.")
+                        st.stop()
+
+                    # Build linear data for each condition
+                    linear_residue_data = {}
+                    linear_ptm_data = {}
+
+                    for cond in conditions:
+                        # List of residues for linear plot
+                        residues_linear = [None] * len(protein_seq)
+
+                        # Choose if PTM column is active
+                        ptm_col_to_use = 'Modified.Sequence' if st.session_state.ptm_enabled and has_ptm else None
+
+                        #suffix = "_FC" if visualize_by == "Fold Change" else "_pvalue"
+                        intensity_col = condition
+
+                        # Map only this peptide
+                        temp_residues, temp_ptms = map_peptides_to_residues(
+                            peptide_rows,
+                            protein_seq,
+                            intensity_col,
+                            overlap_strategy,
+                            ptm_col=ptm_col_to_use,
+                            apply_tryptic=st.session_state.apply_tryptic,
+                            proteotypic_only=st.session_state.proteotypic_only
+                        )
+
+                        # Transform
+                        #if visualize_by == "Fold Change":
+                            # temp_residues = [np.log2(v) if v is not None and np.isfinite(v) and v > 0 else None for v in temp_residues]
+                        #else:
+                            #temp_residues = [-np.log10(v) if v is not None and np.isfinite(v) and v > 0 else None for v in temp_residues]
+                        # Transform only if user requested it
+                        if visualize_by == "Fold Change" and st.session_state.diff_apply_log2:
+                            temp_residues = [np.log2(v) if v is not None and np.isfinite(v) and v > 0 else None for v in temp_residues]
+                        elif visualize_by == "P-value" and st.session_state.diff_apply_neglog10:
+                            temp_residues = [-np.log10(v) if v is not None and np.isfinite(v) and 0 < v <= 1 else None for v in temp_residues]
+                        # else: keep original values (already transformed or user unchecked)
+                        for i, v in enumerate(temp_residues):
+                            if v is not None:
+                                residues_linear[i] = v
+
+                        linear_residue_data[cond] = residues_linear
+
+                        # Rebuild PTM data ONLY for this peptide
+                        cond_ptm = {}
+                        if st.session_state.ptm_enabled and temp_ptms:
+                            for um, positions in temp_ptms.items():
+                                if um not in st.session_state.selected_unimods:
+                                    continue
+                                cfg = st.session_state.ptm_configs.get(um, {})
+                                cond_ptm[um] = {
+                                    "positions": sorted(list(positions)),
+                                    "selected": cfg.get("selected", True),
+                                    "color": cfg.get("color", "#3700FF"),
+                                    "label": cfg.get("label", um),
+                                }
+                        linear_ptm_data[cond] = cond_ptm
+
+                # --------------------------------------------------------------
+                # RENDER LINEAR PLOTS FOR EACH CONDITION
+                # --------------------------------------------------------------
+                first_condition = conditions[0] if conditions else None
+                for cond in conditions:
+                    mapped_count = sum(1 for v in linear_residue_data[cond] if v is not None)
+                    coverage_pct = (mapped_count / len(protein_seq) * 100) if len(protein_seq) > 0 else 0
+                    short_title = f"{cond} (Coverage: {coverage_pct:.1f}%)"
+                    #label_style = "font-size:16px; font-weight:bold; color:Var(--color-text-primary);" if cond == first_condition else "font-size:15px; color:#666;"
+                    st.markdown(
+                        f'<div style="text-align:center; margin:10px 0 6px 0; {short_title}</div>',
+                        unsafe_allow_html=True
+                    )
+                    is_first = (cond == first_condition)
+                    #ptm_to_pass = linear_ptm_data[cond] if is_first else None
+                    render_linear_plot(
+                        linear_residue_data[cond],
+                        short_title,
+                        seq_len,
+                        min_max_logs[cond][0],
+                        min_max_logs[cond][1],
+                        protein_seq,
+                        model_name,
+                        plddt_list,
+                        mean_plddt,
+                        cmap_name=selected_cmap,
+                        not_mapped_color=selected_not_mapped_color,
+                        ptm_data=linear_ptm_data[cond],
+                        show_full_header=is_first,
+                        show_ptm_legend=is_first
+                    )
+                st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
+
+                # Colorbar (adjusted label)
+                st.subheader("Colorbar")
+                overall_vmin = min(min_max_logs[cond][0] for cond in conditions)
+                overall_vmax = max(min_max_logs[cond][1] for cond in conditions)
+                cbar_fig, cbar_ax = plt.subplots(figsize =(8,0.3), constrained_layout =True)
+                norm = Normalize(vmin=overall_vmin, vmax=overall_vmax)
+                sm = ScalarMappable(cmap=colormaps[selected_cmap], norm=norm)
+                cbar = cbar_fig.colorbar(sm, cax=cbar_ax, orientation='horizontal')
+                if visualize_by == "Fold Change":
+                    cbar.set_label('Log2 Fold Change', fontsize=10)
+                else:
+                    cbar.set_label('-Log10 P-value', fontsize=10)
+                cbar.ax.tick_params(labelsize=9)
+                #plt.tight_layout()
+                buf = io.BytesIO()
+                plt.savefig(buf, format='png', bbox_inches='tight', dpi=300, transparent=False)
+                buf.seek(0)
+                img_str = base64.b64encode(buf.getvalue()).decode()
+                plt.close(cbar_fig)
+                html_content = f"""
+                <div style="display: flex; justify-content: center; align-items: center; width: 100%; max-width: 600px; margin: 10px auto;">
+                    <img src="data:image/png;base64,{img_str}" style="width: 100%; max-width: 500px; height: auto; border: 1px solid #ddd; border-radius: 4px;">
+                </div>
+                """
+                st.components.v1.html(html_content, height=80) 
+        with st.expander("📈 Peptide Analysis Plots", expanded=True):            
+                    # ─── Interactive Scatter Plot for selected protein ────────────────────────
+                    st.subheader("Peptide Scatter Plot – Differential Comparison")
+
+                    # small description or help text
+                    st.caption(
+                        "Shows fold changes vs p-values for peptides in the selected protein. "
+                        "Points are colored by comparison/condition pair."
+                    )
+                    if "diff_fc_columns" not in st.session_state or "diff_pval_columns" not in st.session_state:
+                        st.error("Differential columns not found. Please go back to Step 1 and re-confirm files.")
+                        st.stop()
+
+                    fc_columns = st.session_state.diff_fc_columns
+                    pval_columns = st.session_state.diff_pval_columns
+                    # ✅ Correct & Safe
+                    selected_df = st.session_state.get("diff_selected_df")
+
+                    if selected_df is None:
+                        selected_df = st.session_state.get("selected_df")
+
+                    if selected_df is None or (isinstance(selected_df, pd.DataFrame) and selected_df.empty):
+                        st.error("No processed data available. Please complete the protein processing step first.")
+                        st.stop()
+                    if selected_df is None:
+                        st.error("No processed data available. Please complete the protein processing step first.")
+                        st.stop()
+                        
+                    # ─── 1. Find all FC and p-value columns ────────────────────────────────
+                    fc_cols = [c for c in fc_columns if c in selected_df.columns]
+                    pval_cols = [c for c in pval_columns if c in selected_df.columns]
+
+                    if not fc_cols or not pval_cols:
+                        st.warning("Cannot build scatter plot: missing fold-change or p-value columns in data.")
+                    else:
+                        # ─── 2. Melt FC values ────────────────────────────────
+                        df_fc = selected_df.melt(
+                            id_vars=['Stripped.Sequence', 'Modified.Sequence'],
+                            value_vars=fc_cols,
+                            var_name='FC_Condition',
+                            value_name='FC_value'
+                        )
+
+                        # ─── 3. Melt p-value values ────────────────────────────────
+                        df_pval = selected_df.melt(
+                            id_vars=['Stripped.Sequence', 'Modified.Sequence'],
+                            value_vars=pval_cols,
+                            var_name='Pval_Condition',
+                            value_name='P_value'
+                        )
+
+                        # ─── 4. Create clean condition key for joining (remove suffixes)
+                        df_fc['Cond_key'] = df_fc['FC_Condition'].str.replace(r'(_log2FC|_FC|_logFC)$', '', regex=True)
+                        df_pval['Cond_key'] = df_pval['Pval_Condition'].str.replace(r'(_pvalue|_padj|_adjp|_FDR)$', '', regex=True)
+
+                        # ─── 5. Merge on peptide + condition key
+                        plot_df = df_fc.merge(
+                            df_pval,
+                            on=['Stripped.Sequence', 'Modified.Sequence', 'Cond_key'],
+                            how='inner'
+                        )
+
+                        if plot_df.empty:
+                            st.warning("No matching peptide-condition pairs found for the scatter plot.")
+                        else:
+                            # ─── 6. Apply transformations (respect session state flags) ────────────────────────────────
+                            if st.session_state.get('diff_apply_log2', True):
+                                plot_df['FC_value'] = np.log2(plot_df['FC_value'].clip(lower=1e-10))
+                                y_axis_label = "log₂ Fold Change"
+                            else:
+                                y_axis_label = "Fold Change"
+
+                            if st.session_state.get('diff_apply_neglog10', True):
+                                plot_df['P_value'] = -np.log10(plot_df['P_value'].clip(lower=1e-300, upper=1))
+                                x_axis_label = "-log₁₀ P-value"
+                            else:
+                                x_axis_label = "P-value"
+
+                            # ─── 7. Clean condition name for legend ────────────────────────────────
+                            plot_df['Condition'] = plot_df['Cond_key']
+
+                            # ─── 8. Summary stats for title ────────────────────────────────
+                            num_points = len(plot_df)
+                            num_unique_pep = plot_df['Stripped.Sequence'].nunique()
+                            num_comparisons = plot_df['Condition'].nunique()
+
+                            # ─── 9. Plotly figure – full width ────────────────────────────────
+                            fig = px.scatter(
+                                plot_df,
+                                y='FC_value',           # ← changed order: FC on x, -log p on y (classic volcano)
+                                x='P_value',
+                                color='Condition',
+                                hover_name='Stripped.Sequence',
+                                hover_data={
+                                    'Modified.Sequence': True,
+                                    'Condition': True,
+                                    'FC_value': ':.3f',
+                                    'P_value': ':.3e'
+                                },
+                                color_discrete_sequence=px.colors.qualitative.Bold,  # or Plotly, D3, etc.
+                                opacity=0.75,
+                                title=f"Peptide-level Scatter Plot – {selected_protein}<br>"
+                                    f"<sup>({num_points} points • {num_unique_pep} unique peptides • {num_comparisons} comparisons)</sup>",
+                                labels={
+                                    'FC_value': y_axis_label,
+                                    'P_value': x_axis_label
+                                }
+                            )
+
+                            fig.update_traces(
+                                marker=dict(size=9, line=dict(width=0.8, color='rgba(40,40,40,0.6)'))
+                            )
+
+                            fig.update_layout(
+                                legend=dict(
+                                    title="Comparison",
+                                    orientation="v",
+                                    yanchor="top",
+                                    y=0.99,
+                                    xanchor="left",
+                                    x=1.02,
+                                    bgcolor="rgba(0,0,0,0.4)",
+                                    bordercolor="rgba(255,255,255,0.3)",
+                                    borderwidth=1
+                                ),
+                                hovermode="closest",
+                                height=650,               # a bit taller now that it's full-width
+                                margin=dict(l=60, r=60, t=80, b=60),
+                                xaxis_title_font_size=14,
+                                yaxis_title_font_size=14,
+                                title_font_size=18
+                            )
+
+                            # Render full-width
+                            st.plotly_chart(fig, use_container_width=True)
+                    
+                    # ────────────────────────────────────────────────
+                    # Peptide Position Plot – Always Visible, Multi-Condition, Color-Coded
+                    # ────────────────────────────────────────────────
+                    import plotly.graph_objects as go
+
+                    # ====================== PEPTIDE POSITIONS ALONG PROTEIN ======================
+                    st.subheader("🧬 Peptide Positions along Protein (N → C)")
+
+                    st.markdown("""
+                    Peptides from all comparisons shown as horizontal rectangles along the sequence.
+                    - **Y-axis**: log₂ Fold Change  
+                    - **Color**: Blue = AD/Normal, Red = MCI/Normal, Green = PD/Normal  
+                    - **Opacity**: Higher significance (lower p-value) = darker / more solid  
+                    - Thin black border • Hover for details • Click legend to toggle groups
+                    """)
+
+                    # Checkbox always visible
+                    use_significance = st.checkbox(
+                        "Check to see the significnace  (darker = more significant p-value)",
+                        value=True,
+                        key="pep_pos_sig_opacity_v2"
+                    )
+
+                    if 'protein_seq' not in st.session_state or not st.session_state.protein_seq:
+                        st.warning("Protein sequence not available.")
+                    else:
+                        protein_seq = st.session_state.protein_seq
+
+                        # Define comparison map
+                        # ── Build comparison_map DYNAMICALLY (same pattern as scatter plot) ────────
+                        # Uses the same fc_columns / pval_columns already detected in session state
+
+                        fc_columns_all   = st.session_state.diff_fc_columns    # e.g. ["AD/Normal_FC", "MCI/Normal_FC"]
+                        pval_columns_all = st.session_state.diff_pval_columns  # e.g. ["AD/Normal_pvalue", ...]
+
+                        # Strip recognised suffixes to get base comparison name
+                        import re as _re
+                        FC_SUFFIX   = _re.compile(r'(_log2FC|_FC|_logFC|log2FoldChange|FoldChange)$',   _re.IGNORECASE)
+                        PVAL_SUFFIX = _re.compile(r'(_pvalue|_padj|_adjp|_FDR|P\.Value|adj\.P\.Val)$', _re.IGNORECASE)
+
+                        fc_base_map   = {FC_SUFFIX.sub('', c): c   for c in fc_columns_all   if c in selected_df.columns}
+                        pval_base_map = {PVAL_SUFFIX.sub('', c): c for c in pval_columns_all if c in selected_df.columns}
+
+                        # Assign one color per comparison — cycles safely for any number of groups
+                        COLOR_CYCLE = [
+                            "#1f77b4", "#d62728", "#2ca02c", "#ff7f0e",
+                            "#9467bd", "#8c564b", "#e377c2", "#17becf",
+                            "#bcbd22", "#7f7f7f"
+                        ]
+
+                        comparison_map = {}
+                        for i, base in enumerate(sorted(fc_base_map.keys())):
+                            comparison_map[base] = {
+                                "fc_col":   fc_base_map[base],
+                                "pval_col": pval_base_map.get(base),           # None if no matching p-value column
+                                "color":    COLOR_CYCLE[i % len(COLOR_CYCLE)]
+                            }
+
+                        if not comparison_map:
+                            st.warning("No fold-change columns found for the position plot.")
+                            st.stop()
+
+                        # ── Show user what was auto-detected (helpful for debugging) ───────────────
+                        for base, cfg in comparison_map.items():
+                            pval_status = cfg["pval_col"] if cfg["pval_col"] else "⚠️ no p-value column matched"
+                            st.markdown(
+                                f'<span style="display:inline-block;width:14px;height:14px;'
+                                f'background:{cfg["color"]};border-radius:3px;margin-right:6px;'
+                                f'vertical-align:middle;"></span>'
+                                f'**{base}** → FC: `{cfg["fc_col"]}` | p-val: `{pval_status}`',
+                                unsafe_allow_html=True
+                            )
+
+                        # ── Data preparation ───────────────────────────────────────────────────────
+                        plot_rows = []
+                        missing_pval_groups = []
+
+                        for group_name, cols in comparison_map.items():
+                            fc_col   = cols["fc_col"]
+                            pval_col = cols["pval_col"]
+
+                            if fc_col not in selected_df.columns:
+                                continue
+
+                            temp_df   = selected_df[selected_df[fc_col].notna()].copy()
+                            fc_series = temp_df.groupby('Stripped.Sequence')[fc_col].mean()
+
+                            p_series = None
+                            if pval_col and pval_col in temp_df.columns:
+                                p_series = temp_df.groupby('Stripped.Sequence')[pval_col].mean()
+                            elif use_significance:
+                                missing_pval_groups.append(group_name)
+
+                            for pep, fc_raw in fc_series.items():
+                                # Respect the same log2 transform the user chose in step 3
+                                if st.session_state.get('diff_apply_log2', False) and not any(
+                                    k in fc_col.lower() for k in ['log2', 'log2fc']
+                                ):
+                                    fc_val = np.log2(max(1e-10, abs(float(fc_raw)))) * np.sign(float(fc_raw))
+                                else:
+                                    fc_val = float(fc_raw)
+
+                                # p-value → significance score
+                                sig   = 0.0
+                                p_raw = np.nan
+                                if p_series is not None:
+                                    p_raw = p_series.get(pep, np.nan)
+                                    if pd.notna(p_raw) and 0 < float(p_raw) <= 1:
+                                        sig = -np.log10(float(p_raw))
+
+                                # Map peptide to position — robust parsing
+                                position = find_peptide_position(protein_seq, pep)
+                                pos_str  = str(position).strip()
+
+                                # Guard: "-1" (not found) contains '-' but is NOT a valid range
+                                if '-' not in pos_str:
+                                    continue                      # position returned as a plain int or "not found"
+                                parts = pos_str.split('-')
+                                if len(parts) != 2:
+                                    continue
+                                try:
+                                    start, end = int(parts[0]), int(parts[1])
+                                except ValueError:
+                                    continue
+                                if start <= 0 or end <= start:
+                                    continue                      # "-1" splits to "" and "1" → start=0 or negative
+
+                                jitter = np.random.uniform(-0.18, 0.18)
+                                plot_rows.append({
+                                    'sequence':  pep,
+                                    'group':     group_name,
+                                    'y_value':   fc_val + jitter,
+                                    'sig_value': sig,
+                                    'p_value':   p_raw,
+                                    'start':     start,
+                                    'end':       end,
+                                    'color':     cols["color"]
+                                })
+
+                        if not plot_rows:
+                            st.warning(
+                                "No peptides could be mapped for the position plot. "
+                                f"Checked {len(comparison_map)} group(s): {list(comparison_map.keys())}. "
+                                "Verify that 'Stripped.Sequence' values match the protein sequence."
+                            )
+                            st.stop()
+
+                        # ── Everything below here is unchanged — plot_df and fig construction ──────
+                        plot_df = pd.DataFrame(plot_rows)
+                        fig = go.Figure()
+
+                        fig.add_hline(y=0, line_dash="dash", line_color="blue", line_width=1.4)
+
+                        if not plot_df.empty:
+                            fig.add_vline(
+                                x=plot_df['start'].min(), line_color="gray", line_width=1.5,
+                                annotation_text="N-term", annotation_position="top left",
+                                annotation_font=dict(color="black")
+                            )
+                            fig.add_vline(
+                                x=plot_df['end'].max(), line_color="gray", line_width=1.5,
+                                annotation_text="C-term", annotation_position="top right",
+                                annotation_font=dict(color="black")
+                            )
+
+                        max_sig = max(plot_df['sig_value'].max(), 2.0) if use_significance else 1.0
+
+                        if use_significance and missing_pval_groups:
+                            st.warning(
+                                f"p-value columns not found for: **{', '.join(missing_pval_groups)}**. "
+                                "Using fixed opacity for those groups."
+                            )
+
+                        for _, r in plot_df.iterrows():
+                            opacity = (
+                                0.35 + (r['sig_value'] / max_sig) * 0.63
+                                if use_significance and r['sig_value'] > 0
+                                else 0.82
+                            )
+
+                            # Construct a validated CSS rgba color string for Plotly
+                            try:
+                                hexcol = r['color']
+                                if isinstance(hexcol, str) and hexcol.startswith(('rgb', 'rgba')):
+                                    fillcolor_val = hexcol
+                                else:
+                                    hexval = str(hexcol).lstrip('#')
+                                    if len(hexval) == 3:
+                                        hexval = ''.join(2 * c for c in hexval)
+                                    r0 = int(hexval[0:2], 16)
+                                    g0 = int(hexval[2:4], 16)
+                                    b0 = int(hexval[4:6], 16)
+                                    fillcolor_val = f"rgba({r0},{g0},{b0},{opacity})"
+                            except Exception:
+                                fillcolor_val = f"rgba(0,0,0,{opacity})"
+
+                            # Ensure very short peptides are visible as horizontal rectangles
+                            length = r['end'] - r['start']
+                            pad = max(0.4, length * 0.05)
+                            x_rect = [r['start'] - pad, r['end'] + pad, r['end'] + pad, r['start'] - pad, r['start'] - pad]
+                            y_rect = [
+                                r['y_value'] - 0.06, r['y_value'] - 0.06,
+                                r['y_value'] + 0.06, r['y_value'] + 0.06,
+                                r['y_value'] - 0.06
+                            ]
+
+                            hover_text = (
+                                f"<b>{r['sequence']}</b><br>"
+                                f"Group: {r['group']}<br>"
+                                f"Positions: {r['start']:,} – {r['end']:,}<br>"
+                                f"log₂FC: {r['y_value']:.3f}"
+                            )
+                            if use_significance and pd.notna(r['p_value']) and float(r['p_value']) < 1:
+                                hover_text += (
+                                    f"<br>p-value: {r['p_value']:.2e}"
+                                    f"<br>significance: {r['sig_value']:.2f}"
+                                )
+                            hover_text += "<extra></extra>"
+
+                            fig.add_trace(go.Scatter(
+                                x=x_rect, y=y_rect, mode='lines',
+                                fill='toself', fillcolor=fillcolor_val,
+                                line=dict(color='black', width=1.6),
+                                hoverinfo='skip', showlegend=False, legendgroup=r['group']
+                            ))
+                            fig.add_trace(go.Scatter(
+                                x=[(r['start'] + r['end']) / 2], y=[r['y_value']],
+                                mode='markers', marker=dict(color='rgba(0,0,0,0)', size=10),
+                                hovertemplate=hover_text,
+                                legendgroup=r['group'], showlegend=False
+                            ))
+
+                        # Legend entry — one per group, built from actual data not hardcoded map
+                        for group in sorted(plot_df['group'].unique()):
+                            fig.add_trace(go.Scatter(
+                                x=[None], y=[None], mode='markers',
+                                marker=dict(color=comparison_map[group]["color"], size=14, symbol='square'),
+                                name=group, legendgroup=group, showlegend=True
+                            ))
+
+                        fig.update_layout(
+                            title="Peptide Positions – All Comparisons",
+                            xaxis_title="Amino Acid Position (N → C)",
+                            yaxis_title="log₂ Fold Change",
+                            height=680,
+                            hovermode="closest",
+                            legend=dict(
+                                orientation="h", yanchor="bottom", y=1.02,
+                                xanchor="center", x=0.5,
+                                bgcolor="rgba(255,255,255,0.95)",
+                                font=dict(color="black", size=12)
+                            ),
+                            margin=dict(l=110, r=60, t=100, b=60),
+                            plot_bgcolor="white", paper_bgcolor="white",
+                            xaxis=dict(
+                                showgrid=False, showline=True,
+                                linewidth=1.2, linecolor='gray',
+                                title_font=dict(color="black"),
+                                tickfont=dict(color="black")
+                            ),
+                            yaxis=dict(
+                                showgrid=False, zeroline=True, zerolinecolor='blue',
+                                showline=True, linewidth=1.2, linecolor='gray',
+                                title_font=dict(color="black"),
+                                tickfont=dict(color="black")
+                            )
+                        )
+
+                        st.plotly_chart(fig, use_container_width=True)
+        # ===============================================
+        # 💾 Download & Reset Buttons
+        # ===============================================
+    
+        col_btn1, col_btn2 = st.columns(2)
+    
+        with col_btn1:
+            if st.button("Prepare Download (ZIP)", use_container_width=True):
+                zip_buffer = create_download_zip(
+                    selected_protein, pdb_str, peptide_data, residue_data, conditions, min_max_logs, seq_len,
+                    selected_cmap, selected_not_mapped_color,
+                    ptm_data if st.session_state.ptm_enabled else None,
+                    selected_df if st.session_state.ptm_enabled else None,
+                    protein_seq if st.session_state.ptm_enabled else None,
+                    apply_tryptic=st.session_state.apply_tryptic,
+                    metadata=metadata
+                )
+                st.download_button(
+                    label="Download ZIP",
+                    data=zip_buffer.getvalue(),
+                    file_name=f"{selected_protein}_files.zip",
+                    mime="application/zip"
+                )
+    
+        with col_btn2:
+            if st.button("Reset & Re-Process", use_container_width=True):
+                st.session_state.clear()
+                st.session_state.conditions_confirmed = False
+                st.session_state.processed = False
+                st.session_state.selected_residue = None
+                st.session_state.ptm_enabled = False
+                st.session_state.ptm_configs = {}
+                st.session_state.apply_tryptic = False
+                st.session_state.pdb_source = 'AlphaFold'
+                st.session_state.uploaded_pdb = None
+                st.session_state.all_unimods = []
+                st.session_state.selected_unimods = []
+                st.rerun()
