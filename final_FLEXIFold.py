@@ -5508,7 +5508,7 @@ with quant_diff_tab:
                             length = r['end'] - r['start']
                             pad = max(0.4, length * 0.05)
                             x_rect = [r['start'] - pad, r['end'] + pad, r['end'] + pad, r['start'] - pad, r['start'] - pad]
-                            thickness = 0.15
+                            thickness = 0.10
                             y_rect = [
                                 r['y_value'] - thickness, r['y_value'] - thickness,
                                 r['y_value'] + thickness, r['y_value'] + thickness,
