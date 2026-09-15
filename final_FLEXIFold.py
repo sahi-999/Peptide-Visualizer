@@ -5331,10 +5331,10 @@ with quant_diff_tab:
                         key="pep_pos_sig_opacity_v2"
                     )
 
-                    if 'protein_seq' not in st.session_state or not st.session_state.protein_seq:
+                    if 'diff_protein_seq' not in st.session_state or not st.session_state.diff_protein_seq:
                         st.warning("Protein sequence not available.")
                     else:
-                        protein_seq = st.session_state.protein_seq
+                        protein_seq = st.session_state.diff_protein_seq
 
                         # Define comparison map
                         # ── Build comparison_map DYNAMICALLY (same pattern as scatter plot) ────────
