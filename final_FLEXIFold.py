@@ -5506,12 +5506,13 @@ with quant_diff_tab:
 
                             # Ensure very short peptides are visible as horizontal rectangles
                             length = r['end'] - r['start']
-                            pad = max(0.5, length * 0.07)
+                            pad = max(0.4, length * 0.05)
                             x_rect = [r['start'] - pad, r['end'] + pad, r['end'] + pad, r['start'] - pad, r['start'] - pad]
+                            thickness = 0.15
                             y_rect = [
-                                r['y_value'] - 0.06, r['y_value'] - 0.06,
-                                r['y_value'] + 0.06, r['y_value'] + 0.06,
-                                r['y_value'] - 0.06
+                                r['y_value'] - thickness, r['y_value'] - thickness,
+                                r['y_value'] + thickness, r['y_value'] + thickness,
+                                r['y_value'] - thickness
                             ]
 
                             hover_text = (
