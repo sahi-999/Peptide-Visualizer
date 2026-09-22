@@ -260,12 +260,14 @@ def render_ngl_synced_viewer(
     """
     Renders `len(conditions)` synced NGL 3D panels (1-4, wraps to a 2nd row
     above 2) plus ONE shared sequence grid underneath, with full
-    bi-directional hover/click linking, click-to-zoom on the contiguous
-    mapped region under the cursor, a manual residue-range zoom, a
-    ribbon/CPK backbone toggle, and chemically-accurate PTM hyperball
-    markers per condition (color/label taken from that condition's
-    ptm_data, which the caller should already have merged with
-    seed_ptm_config_defaults()).
+    bi-directional hover/click linking, synchronized camera (rotate/zoom/pan
+    on any panel mirrors to every other panel), click-to-zoom on the
+    contiguous mapped region under the cursor, a manual residue-range zoom,
+    a ribbon/CPK backbone toggle, chemically-accurate PTM hyperball markers
+    per condition (color/label taken from that condition's ptm_data, which
+    the caller should already have merged with seed_ptm_config_defaults()),
+    and a per-residue Z-score heatmap track under the sequence, one row per
+    condition, using the exact same colors as the 3D structure coloring.
 
     residue_data: { condition_name: [float|None, ...] }  (len == len(protein_seq))
     ptm_data:     { condition_name: { unimod_id: {'positions':[int,...],
@@ -336,6 +338,11 @@ def render_ngl_synced_viewer(
     n_cols = 2 if n > 1 else 1
     panel_min_width = 320
 
+    # Extra vertical room in the shared sequence panel for the per-condition
+    # Z-score heatmap tracks stacked under each residue letter.
+    seq_extra_px = max(0, n - 1) * 18
+    seq_container_height = 170 + seq_extra_px
+
     html_head = """
 <style>
   * { box-sizing: border-box; }
@@ -366,21 +373,36 @@ def render_ngl_synced_viewer(
     border:1px solid #f43f5e; border-radius:6px; padding:5px 10px; color:#fda4af;
     font-size:12px; font-weight:600; cursor:pointer; user-select:none;
   }
+  #ngls-camsync""" + key_suffix + """ {
+    position:absolute; top:10px; right:10px; z-index:998;
+    background:rgba(16,185,129,.15); border:1px solid #10b981; border-radius:6px;
+    padding:3px 8px; color:#6ee7b7; font-size:10px; font-weight:700;
+    letter-spacing:.04em; text-transform:uppercase; pointer-events:none;
+  }
   .ngls-seq-row {
     border:1px solid #e2e8f0; border-radius:12px; background:#fff; overflow:hidden;
   }
   .ngls-seq-header { display:flex; justify-content:space-between; align-items:center; padding:10px 16px; border-bottom:2px solid #f1f5f9; }
   .ngls-seq-header h4 { margin:0; color:#1e293b; font-size:14px; }
+  .ngls-seq-legend { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .ngls-seq-legend-item { display:flex; align-items:center; gap:4px; font-size:11px; color:#64748b; }
+  .ngls-seq-legend-swatch { width:10px; height:10px; border-radius:2px; display:inline-block; }
   #ngls-seq-container""" + key_suffix + """ {
-    height:170px; overflow-y:auto; padding:14px 18px; letter-spacing:7px; line-height:34px;
+    height:""" + str(seq_container_height) + """px; overflow-y:auto; padding:14px 18px; letter-spacing:7px;
     font-family: 'SFMono-Regular', Consolas, monospace; font-size:15px; word-break:break-all; user-select:none;
   }
+  .ngls-res-wrap { display:inline-block; position:relative; }
+  .ngls-res-tracks { display:flex; flex-direction:column; gap:1px; margin-top:3px; }
+  .ngls-res-track { height:3px; width:100%; border-radius:1px; }
 </style>
 <div class="ngls-root">
   <div id="ngls-badge""" + key_suffix + """">Zoomed \u2014 click to reset \u2715</div>
   <div class="ngls-grid" id="ngls-grid""" + key_suffix + """"></div>
   <div class="ngls-seq-row">
-    <div class="ngls-seq-header"><h4>Synced Sequence (hover/click links to every 3D panel above)</h4></div>
+    <div class="ngls-seq-header">
+      <h4>Synced Sequence (hover/click links to every 3D panel above)</h4>
+      <div class="ngls-seq-legend" id="ngls-seq-legend""" + key_suffix + """"></div>
+    </div>
     <div id="ngls-seq-container""" + key_suffix + """"></div>
   </div>
 </div>
@@ -425,6 +447,19 @@ function findSegment(resNum){
   return null;
 }
 
+// ---- expand each condition's RLE color segments into a flat per-residue
+// ---- color array (0-based), reused by both the 3D scheme AND the shared
+// ---- sequence heatmap tracks below, so the two views always agree.
+const perResidueColors = {};
+conditions.forEach(function(cond){
+  const arr = new Array(fullSeq.length).fill(null);
+  (conditionSegments[cond] || []).forEach(function(seg){
+    const color = seg[0], start = seg[1], end = seg[2]; // 1-based inclusive
+    for (let i = start; i <= end; i++) { arr[i-1] = color; }
+  });
+  perResidueColors[cond] = arr;
+});
+
 // ---- build the grid + stages --------------------------------------------
 const gridEl = document.getElementById("ngls-grid"+SFX);
 const stages = {};
@@ -443,6 +478,12 @@ conditions.forEach(function(cond, idx){
   hud.id = "ngls-hud" + SFX;
   wrap.appendChild(label);
   viewport.appendChild(hud);
+  if (conditions.length > 1 && idx === 0) {
+    const camTag = document.createElement("div");
+    camTag.id = "ngls-camsync" + SFX;
+    camTag.textContent = "Camera Synced";
+    viewport.appendChild(camTag);
+  }
   wrap.appendChild(viewport);
   gridEl.appendChild(wrap);
 
@@ -528,6 +569,38 @@ function resetZoomAll(){
   clearSeqSelection();
 }
 badgeEl.addEventListener("click", resetZoomAll);
+
+// ---- CAMERA SYNC: rotate/zoom/pan any panel, mirror to every other panel -
+// NGL fires `orientationChanged` on the stage's viewerControls whenever the
+// view matrix changes (mouse drag rotate, scroll zoom, right-drag pan, and
+// programmatic autoView/orient calls). We listen on every stage and copy the
+// resulting orientation matrix onto all the other stages, guarding against
+// re-entrant feedback with a simple in-flight flag.
+let syncingCamera = false;
+function setupCameraSync(){
+  if (conditions.length < 2) return;
+  conditions.forEach(function(cond){
+    const stage = stages[cond];
+    if (!stage.signals || !stage.signals.orientationChanged) return;
+    stage.signals.orientationChanged.add(function(){
+      if (syncingCamera) return;
+      syncingCamera = true;
+      try {
+        const orientation = stage.viewerControls.getOrientation();
+        conditions.forEach(function(otherCond){
+          if (otherCond === cond) return;
+          try {
+            stages[otherCond].viewerControls.orient(orientation);
+          } catch (e) { /* ignore a single panel failing to orient */ }
+        });
+      } finally {
+        // release on next tick so the programmatic .orient() calls above
+        // (which themselves fire orientationChanged) don't re-trigger sync
+        setTimeout(function(){ syncingCamera = false; }, 0);
+      }
+    });
+  });
+}
 
 // ---- crosshair + hud on hover/click, mirrored across ALL panels ---------
 function showCrosshair(resNum){
@@ -632,20 +705,49 @@ conditions.forEach(function(cond){
       focusResidue(atom.resno, true, true);
     });
     loadedCount++;
-    if (loadedCount === conditions.length && MANUAL_SELECTION && MANUAL_SELECTION.start && MANUAL_SELECTION.end) {
-      zoomAllTo({start: MANUAL_SELECTION.start, end: MANUAL_SELECTION.end});
+    if (loadedCount === conditions.length) {
+      if (MANUAL_SELECTION && MANUAL_SELECTION.start && MANUAL_SELECTION.end) {
+        zoomAllTo({start: MANUAL_SELECTION.start, end: MANUAL_SELECTION.end});
+      }
+      // Only start mirroring camera moves once every panel has a model
+      // loaded and its own initial autoView has settled.
+      setupCameraSync();
     }
   });
 });
 
-// ---- build the shared sequence grid ---------------------------------------
+// ---- build the shared sequence grid + per-condition Z-score heatmap -----
 const seqContainer = document.getElementById("ngls-seq-container"+SFX);
+// give each residue line enough height for the letter plus stacked tracks
+seqContainer.style.lineHeight = (26 + conditions.length * 5) + "px";
+
+// legend: one swatch per condition so users know which track is which
+const legendEl = document.getElementById("ngls-seq-legend"+SFX);
+if (conditions.length > 1) {
+  conditions.forEach(function(cond){
+    const item = document.createElement("div");
+    item.className = "ngls-seq-legend-item";
+    const sw = document.createElement("span");
+    sw.className = "ngls-seq-legend-swatch";
+    sw.style.background = "linear-gradient(90deg,#3b82f6,#eab308,#ef4444)";
+    item.appendChild(sw);
+    const txt = document.createElement("span");
+    txt.textContent = cond;
+    item.appendChild(txt);
+    legendEl.appendChild(item);
+  });
+} else {
+  const item = document.createElement("div");
+  item.className = "ngls-seq-legend-item";
+  item.textContent = "Color = " + VALUE_LABEL + " per residue";
+  legendEl.appendChild(item);
+}
+
 for (let i=0;i<fullSeq.length;i++){
   const resNum = i+1;
   const letter = fullSeq[i];
   const wrapper = document.createElement("div");
-  wrapper.style.display = "inline-block";
-  wrapper.style.position = "relative";
+  wrapper.className = "ngls-res-wrap";
 
   const span = document.createElement("span");
   span.innerText = letter;
@@ -657,7 +759,6 @@ for (let i=0;i<fullSeq.length;i++){
   span.style.transition = "all .12s ease";
 
   if (unionMapped[i]) {
-    span.style.backgroundColor = "#dbeafe";
     span.style.color = "#1e40af";
     span.style.fontWeight = "bold";
   } else {
@@ -674,18 +775,36 @@ for (let i=0;i<fullSeq.length;i++){
     dot.style.position="absolute"; dot.style.top="-4px"; dot.style.left="35%";
     dot.style.width="8px"; dot.style.height="8px"; dot.style.borderRadius="50%";
     dot.style.backgroundColor = dotColor; dot.style.border="1.5px solid #fff";
+    dot.style.zIndex = "5";
     wrapper.appendChild(dot);
   }
+
+  // ---- per-condition Z-score heatmap track(s), same colors as the 3D view
+  const tracks = document.createElement("div");
+  tracks.className = "ngls-res-tracks";
+  let tooltipLines = [];
+  conditions.forEach(function(cond){
+    const bar = document.createElement("div");
+    bar.className = "ngls-res-track";
+    const color = (perResidueColors[cond] && perResidueColors[cond][i]) ? perResidueColors[cond][i] : "#e5e7eb";
+    bar.style.backgroundColor = color;
+    tracks.appendChild(bar);
+    const v = conditionVals[cond][i];
+    tooltipLines.push(cond + ": " + (v === null || v === undefined ? "not mapped" : v));
+  });
+  tracks.title = "Residue " + letter + resNum + "\\n" + tooltipLines.join("\\n");
+  span.title = tracks.title;
 
   span.addEventListener("mouseenter", function(){ focusResidue(resNum, false, false); });
   span.addEventListener("click", function(){ focusResidue(resNum, false, true); });
 
   wrapper.appendChild(span);
+  wrapper.appendChild(tracks);
   seqContainer.appendChild(wrapper);
 }
 })();
 </script>
 """
 
-    total_height = (height_per_row * ((n + n_cols - 1) // n_cols)) + 260
+    total_height = (height_per_row * ((n + n_cols - 1) // n_cols)) + 260 + seq_extra_px
     components.html(html_head, height=total_height, scrolling=True)
