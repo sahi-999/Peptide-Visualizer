@@ -197,6 +197,46 @@ def _generate_hex_colors(residue_vals, cmap_name, not_mapped_color, vmin, vmax):
     return hex_colors
 
 
+def _generate_color_segments(residue_vals, cmap_name, not_mapped_color, vmin, vmax, n_bins=48):
+    """
+    Quantizes the z-score colormap into `n_bins` discrete steps and
+    run-length-encodes consecutive same-bucket residues into
+    (hex, start_1based, end_1based_inclusive) segments.
+
+    This feeds NGL's ColormakerRegistry.addSelectionScheme (a stable,
+    long-standing "color these residue ranges these colors" API), which is
+    far more reliably supported across NGL builds than the function-based
+    addScheme() custom-Colormaker API -- the latter is what silently fell
+    back to NGL's default chain coloring and produced the flat
+    "detected/undetected in one color" look.
+    """
+    cmap = colormaps[cmap_name]
+    denom = (vmax - vmin) if vmax > vmin else 1.0
+
+    def bucket_hex(val):
+        if val is None:
+            return not_mapped_color
+        t = (val - vmin) / denom
+        t = min(1.0, max(0.0, t))
+        b = round(t * (n_bins - 1)) if n_bins > 1 else 0
+        t_q = (b / (n_bins - 1)) if n_bins > 1 else 0.5
+        rgb = cmap(t_q)[:3]
+        return mcolors.rgb2hex(rgb)
+
+    colors = [bucket_hex(v) for v in residue_vals]
+    segments = []
+    n = len(colors)
+    i = 0
+    while i < n:
+        c = colors[i]
+        j = i
+        while j + 1 < n and colors[j + 1] == c:
+            j += 1
+        segments.append([c, i + 1, j + 1])  # 1-based inclusive
+        i = j + 1
+    return segments
+
+
 # ============================================================================
 # MAIN RENDER FUNCTION
 # ============================================================================
@@ -241,12 +281,14 @@ def render_ngl_synced_viewer(
     conditions = list(conditions)[:4]  # hard cap at 4 panels, matches original app's 2-4 rule where relevant
     n = len(conditions)
 
-    # ---- per-condition hex color arrays -----------------------------------
-    condition_colors = {}
+    # ---- per-condition color SEGMENTS (quantized + run-length-encoded) ----
+    # (see _generate_color_segments docstring for why segments, not a
+    # per-atom custom Colormaker, are used to drive the 3D coloring)
+    condition_segments = {}
     condition_vals = {}
     for cond in conditions:
         vals = residue_data.get(cond, [None] * seq_len)
-        condition_colors[cond] = _generate_hex_colors(vals, cmap_name, not_mapped_color, vmin, vmax)
+        condition_segments[cond] = _generate_color_segments(vals, cmap_name, not_mapped_color, vmin, vmax)
         condition_vals[cond] = [None if v is None else round(float(v), 3) for v in vals]
 
     # ---- union "mapped" map used to build clickable peptide segments -----
@@ -281,7 +323,7 @@ def render_ngl_synced_viewer(
     js_data = {
         "fullSeq": protein_seq,
         "conditions": conditions,
-        "conditionColors": condition_colors,
+        "conditionSegments": condition_segments,
         "conditionVals": condition_vals,
         "unionMapped": union_mapped,
         "ptmByCond": {c: {str(k): v for k, v in ptm_by_cond[c].items()} for c in conditions},
@@ -348,10 +390,10 @@ def render_ngl_synced_viewer(
 const SFX = \"""" + key_suffix + """\";
 const data = """ + json.dumps(js_data) + """;
 
-const fullSeq        = data.fullSeq;
-const conditions      = data.conditions;
-const conditionColors = data.conditionColors;
-const conditionVals   = data.conditionVals;
+const fullSeq          = data.fullSeq;
+const conditions        = data.conditions;
+const conditionSegments = data.conditionSegments;
+const conditionVals     = data.conditionVals;
 const unionMapped     = data.unionMapped;
 const ptmByCond       = data.ptmByCond;
 const BACKBONE_STYLE  = data.backboneStyle;
@@ -408,14 +450,18 @@ conditions.forEach(function(cond, idx){
   stages[cond] = stage;
 
   const schemeName = "scheme_" + idx + SFX;
-  NGL.ColormakerRegistry.addScheme(function(){
-    const arr = conditionColors[cond];
-    this.atomColor = function(atom){
-      const hex = (arr && arr[atom.resno-1]) || "#d3d3d3";
-      return parseInt(hex.replace("#",""), 16);
-    };
-  }, schemeName);
-  colorSchemeNames[cond] = schemeName;
+  const segs = conditionSegments[cond] || [];
+  const pairs = segs.map(function(seg){
+    // seg = [hex, startResno, endResno] (1-based, inclusive)
+    return [seg[0], seg[1] + "-" + seg[2] + ":A"];
+  });
+  let registeredId = schemeName;
+  try {
+    registeredId = NGL.ColormakerRegistry.addSelectionScheme(pairs, schemeName) || schemeName;
+  } catch (e) {
+    console.error("NGL addSelectionScheme failed for", cond, e);
+  }
+  colorSchemeNames[cond] = registeredId;
 });
 
 const hudEl = document.getElementById("ngls-hud"+SFX);
@@ -437,10 +483,16 @@ function addPtmReprs(comp, cond, rn, emphasize){
 }
 
 function addBackboneRepr(comp, sele, schemeName, opacity, cpkScale){
-  if (BACKBONE_STYLE === "cpk") {
-    comp.addRepresentation("hyperball", {sele: sele, color: schemeName, opacity: opacity, scale: cpkScale || 0.2});
-  } else {
-    comp.addRepresentation("cartoon", {sele: sele, color: schemeName, opacity: opacity});
+  try {
+    if (BACKBONE_STYLE === "cpk") {
+      comp.addRepresentation("hyperball", {sele: sele, color: schemeName, opacity: opacity, scale: cpkScale || 0.2});
+    } else {
+      comp.addRepresentation("cartoon", {sele: sele, color: schemeName, opacity: opacity});
+    }
+  } catch (e) {
+    console.error("addBackboneRepr failed, falling back to flat color", e);
+    const fallbackRepr = (BACKBONE_STYLE === "cpk") ? "hyperball" : "cartoon";
+    comp.addRepresentation(fallbackRepr, {sele: sele, color: "#a7a5a5", opacity: opacity});
   }
 }
 
