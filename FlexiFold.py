@@ -28,7 +28,11 @@ from streamlit import cache_data
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 import plotly.graph_objects as go
+import ngl_sync_viewer as ngl_sync
 
+@st.cache_data(show_spinner=False)
+def _cached_fetch_unimod_data(unimod_ids: tuple):
+    return ngl_sync.fetch_unimod_data(unimod_ids)
 
 st.session_state.setdefault("main_tab", "Qualitative Analysis")      # default main tab
 st.session_state.setdefault("active_quant_tab", "single")           # quant sub-tab
@@ -2176,6 +2180,8 @@ with main_tab[1]:
                     if not hasattr(residue_vals, '__len__') or len(residue_vals) == 0:
                         st.warning("No residue values were mapped. Color will be uniform.")
                         residue_vals = [0.0] * len(protein_seq)   # or whatever fallback makes sense
+                    enriched = _cached_fetch_unimod_data(tuple(all_unimods))
+                    ngl_sync.seed_ptm_config_defaults(st.session_state.ptm_configs, all_unimods, enriched)
                     # === Build PTM data ===
                     final_ptm = {}
                     if st.session_state.ptm_enabled and ptm_dict:
@@ -2286,14 +2292,19 @@ with main_tab[1]:
                 }
                     # === 3D Viewer ===
                 st.subheader("3D Structure Visualization")
-                render_single_3d_viewer(
-                        pdb_str,
-                        residue_vals,
-                        intensity_col,
-                        "autumn",
-                        "#A7A5A5",
-                        final_ptm
+                engine = st.radio("3D Engine", ["NGL (Synced)", "py3Dmol (Classic)"], key="quant_single_engine")
+                if engine.startswith("NGL"):
+                    backbone = "cpk" if st.radio("Backbone", ["Ribbon", "CPK"], key="quant_single_backbone", horizontal=True) == "CPK" else "ribbon"
+                    ngl_sync.render_ngl_synced_viewer(
+                        pdb_str=pdb_str, protein_seq=protein_seq,
+                        conditions=[intensity_col],
+                        residue_data={intensity_col: residue_vals},
+                        ptm_data={intensity_col: (final_ptm or {})},
+                        vmin=-3, vmax=3, cmap_name="autumn", not_mapped_color="#A7A5A5",
+                        backbone_style=backbone, key_suffix="_quantsingle",
                     )
+                else:
+                    render_single_3d_viewer(pdb_str, residue_vals, intensity_col, "autumn", "#A7A5A5", final_ptm)
 
                 # === Linear Plot —  Z-score Style ===
                 st.subheader("Linear Sequence Visualization")
@@ -3032,11 +3043,13 @@ with main_tab[1]:
                             st.session_state.ptm_configs = {}
                         for um in st.session_state.selected_unimods:
                             if um not in st.session_state.ptm_configs:
-                                st.session_state.ptm_configs[um] = {
-                                    "selected": True,
-                                    "label": um,
-                                    "color": "#3700FF",
-                                }
+                                #st.session_state.ptm_configs[um] = {
+                                    #"selected": True,
+                                    #"label": um,
+                                    #"color": "#3700FF",
+                                #}
+                               enriched = _cached_fetch_unimod_data(tuple(st.session_state.selected_unimods))
+                               ngl_sync.seed_ptm_config_defaults(st.session_state.ptm_configs, st.session_state.selected_unimods, enriched) 
 
                         for um in st.session_state.selected_unimods:
                             m_id = re.search(r"(\d+)", str(um))
@@ -3447,7 +3460,26 @@ with main_tab[1]:
                         if 'protein_ptms' in locals() and protein_ptms:
                             protein_ptms = normalize_ptm_data(protein_ptms)
 
-                        render_synced_viewers(pdb_str, viewer_residue_data, bg_color, conditions, selected_cmap, selected_not_mapped_color, viewer_ptm_data)
+                        #render_synced_viewers(pdb_str, viewer_residue_data, bg_color, conditions, selected_cmap, selected_not_mapped_color, viewer_ptm_data)
+                        engine = st.radio("3D Engine", ["NGL (Synced)", "py3Dmol (Classic)"], key="quant_multi_engine")
+                        if engine.startswith("NGL"):
+                            backbone = "cpk" if st.radio("Backbone", ["Ribbon", "CPK"], key="quant_multi_backbone", horizontal=True) == "CPK" else "ribbon"
+                            all_vals = [v for res in viewer_residue_data for v in res if v is not None]
+                            if st.session_state.is_frequency:
+                                vmn = min(all_vals, default=0); vmx = max(all_vals, default=1)
+                                margin = max(0.01, (vmx - vmn) * 0.05); vmn -= margin; vmx += margin
+                            else:
+                                vmn, vmx = -3, 3
+                            ngl_sync.render_ngl_synced_viewer(
+                                pdb_str=pdb_str, protein_seq=protein_seq, conditions=conditions,
+                                residue_data=dict(zip(conditions, viewer_residue_data)),
+                                ptm_data=dict(zip(conditions, viewer_ptm_data)),
+                                vmin=vmn, vmax=vmx, cmap_name=selected_cmap, not_mapped_color=selected_not_mapped_color,
+                                backbone_style=backbone, key_suffix="_quantmulti",
+                                value_label="Frequency-Z" if st.session_state.is_frequency else "Z-Score",
+                            )
+                        else:
+                            render_synced_viewers(pdb_str, viewer_residue_data, bg_color, conditions, selected_cmap, selected_not_mapped_color, viewer_ptm_data)
                         st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
                         
                         # Calculate coverage for each condition
@@ -4872,9 +4904,11 @@ with quant_diff_tab:
                 # Initialize only for new UniMods, never wipe existing
                 for um in st.session_state.diff_selected_unimods:
                     if um not in st.session_state.diff_ptm_configs:
-                        st.session_state.diff_ptm_configs[um] = {
-                            "selected": True, "label": um, "color": "#3700FF"
-                        }
+                        enriched = _cached_fetch_unimod_data(tuple(st.session_state.diff_selected_unimods))
+                        ngl_sync.seed_ptm_config_defaults(st.session_state.diff_ptm_configs, st.session_state.diff_selected_unimods, enriched)
+                        #st.session_state.diff_ptm_configs[um] = {
+                            #"selected": True, "label": um, "color": "#3700FF"
+                        #}
 
                 for um in st.session_state.diff_selected_unimods:
                     m_id = re.search(r"(\d+)", str(um))
@@ -5217,7 +5251,24 @@ with quant_diff_tab:
                 if 'protein_ptms' in locals() and protein_ptms:
                     protein_ptms = normalize_ptm_data(protein_ptms)
                 
-                render_synced_viewers(pdb_str, viewer_residue_data, st.session_state.diff_bg_color, conditions, st.session_state.diff_selected_cmap, st.session_state.diff_not_mapped_color, viewer_ptm_data)
+                #render_synced_viewers(pdb_str, viewer_residue_data, st.session_state.diff_bg_color, conditions, st.session_state.diff_selected_cmap, st.session_state.diff_not_mapped_color, viewer_ptm_data)
+                engine = st.radio("3D Engine", ["NGL (Synced)", "py3Dmol (Classic)"], key="diff_engine")
+                if engine.startswith("NGL"):
+                    backbone = "cpk" if st.radio("Backbone", ["Ribbon", "CPK"], key="diff_backbone", horizontal=True) == "CPK" else "ribbon"
+                    overall_vmin = min(min_max_logs[c][0] for c in conditions)
+                    overall_vmax = max(min_max_logs[c][1] for c in conditions)
+                    label = "Log2 Fold Change" if visualize_by == "Fold Change" else "-Log10 P-value"
+                    ngl_sync.render_ngl_synced_viewer(
+                        pdb_str=pdb_str, protein_seq=protein_seq, conditions=conditions,
+                        residue_data=dict(zip(conditions, viewer_residue_data)),
+                        ptm_data=dict(zip(conditions, viewer_ptm_data)),
+                        vmin=overall_vmin, vmax=overall_vmax,
+                        cmap_name=st.session_state.diff_selected_cmap,
+                        not_mapped_color=st.session_state.diff_not_mapped_color,
+                        backbone_style=backbone, key_suffix="_diff", value_label=label,
+                    )
+                else:
+                    render_synced_viewers(pdb_str, viewer_residue_data, st.session_state.diff_bg_color, conditions, st.session_state.diff_selected_cmap, st.session_state.diff_not_mapped_color, viewer_ptm_data)
                 st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
                 
                 # Calculate coverage for each condition
