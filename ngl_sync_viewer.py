@@ -576,13 +576,17 @@ badgeEl.addEventListener("click", resetZoomAll);
 // programmatic autoView/orient calls). We listen on every stage and copy the
 // resulting orientation matrix onto all the other stages, guarding against
 // re-entrant feedback with a simple in-flight flag.
+// ---- CAMERA SYNC: rotate/zoom/pan any panel, mirror to every other panel -
 let syncingCamera = false;
 function setupCameraSync(){
   if (conditions.length < 2) return;
   conditions.forEach(function(cond){
     const stage = stages[cond];
-    if (!stage.signals || !stage.signals.orientationChanged) return;
-    stage.signals.orientationChanged.add(function(){
+    
+    // FIX: The correct NGL event for camera manipulation is viewerControls.signals.changed
+    if (!stage.viewerControls || !stage.viewerControls.signals.changed) return;
+    
+    stage.viewerControls.signals.changed.add(function(){
       if (syncingCamera) return;
       syncingCamera = true;
       try {
@@ -595,7 +599,7 @@ function setupCameraSync(){
         });
       } finally {
         // release on next tick so the programmatic .orient() calls above
-        // (which themselves fire orientationChanged) don't re-trigger sync
+        // (which themselves fire the changed event) don't trigger an infinite loop
         setTimeout(function(){ syncingCamera = false; }, 0);
       }
     });
