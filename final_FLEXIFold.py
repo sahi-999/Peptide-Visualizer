@@ -1050,41 +1050,47 @@ def render_linear_plot(residue_vals, title, seq_len, vmin, vmax, protein_seq, mo
     container_html = f'<div style="overflow-x:auto; max-width:100%; margin:10px 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">{svg}</div>'
     # combine title, legend and svg
     # legend_html may be empty if no PTMs configured
-    js = f"""
+   js = f"""
     <script>
     const mapped = {mapped_js};
     const rects = document.querySelectorAll('rect[data-pos]');
     rects.forEach(el => {{
-    const pos = parseInt(el.getAttribute('data-pos'));
-    const isMapped = mapped.includes(pos);
-    if (isMapped) {{
-        el.style.cursor = 'pointer';
-        el.addEventListener('click', e => {{
-        const pos = parseInt(e.target.getAttribute('data-pos'));
-        window.parent.postMessage({{ type: 'SELECT_RESIDUE', residue: pos }}, '*');
+        const pos = parseInt(el.getAttribute('data-pos'));
+        const isMapped = mapped.includes(pos);
+        if (isMapped) {{
+            el.style.cursor = 'pointer';
+            el.addEventListener('click', e => {{
+                const clickedPos = parseInt(e.target.getAttribute('data-pos'));
+                window.parent.postMessage({{ type: 'SELECT_RESIDUE', residue: clickedPos }}, '*');
+            }});
+        }}
+        el.addEventListener('mouseover', e => {{
+            if (e.target.title) {{
+                e.target.style.opacity = '0.7';
+                e.target.style.strokeWidth = '1';
+            }}
         }});
-    }}
-    el.addEventListener('mouseover', e => {{
-        if (e.target.title) {{
-        e.target.style.opacity = '0.7';
-        e.target.style.strokeWidth = '1';
+        el.addEventListener('mouseout', e => {{
+            e.target.style.opacity = '1';
+            e.target.style.strokeWidth = '0.5';
+        }});
+    }});
+
+    // Bidirectional Listener: Highlights SVG rect when clicked from 3D model or sequence text
+    window.addEventListener("message", (event) => {{
+        if (event.data && event.data.type === "SELECT_RESIDUE") {{
+            const residue = event.data.residue;
+            const prev = document.querySelector('.clicked-residue');
+            if (prev) prev.classList.remove('clicked-residue');
+            const newHighlight = document.querySelector(`rect[data-pos="${{residue}}"]`);
+            if (newHighlight) newHighlight.classList.add('clicked-residue');
         }}
     }});
-    el.addEventListener('mouseout', e => {{
-        e.target.style.opacity = '1';
-        e.target.style.strokeWidth = '0.5';
-    }});
-    // ---- NEW: visual highlight of the clicked bar ----
-    const prev = document.querySelector('.clicked-residue');
-    if (prev) prev.classList.remove('clicked-residue');
-    el.classList.add('clicked-residue');
-    // ------------------------------------------------
-    }});
-    // ---- CSS for highlight ----
+
     const style = document.createElement('style');
     style.innerHTML = `
-    .clicked-residue {{ filter: brightness(1.3); stroke: #FFD700; stroke-width: 3; }}
-        `;
+    .clicked-residue {{ filter: brightness(1.3); stroke: #FFD700 !important; stroke-width: 3 !important; }}
+    `;
     document.head.appendChild(style);
     </script>
     """
@@ -2115,21 +2121,45 @@ with main_tab[0]:
                     apply_tryptic=st.session_state.apply_tryptic
                 )
 
-                # === Build PTM data ===
+            
+                # === Build PTM data with API Fetch ===
                 final_ptm = {}
                 if st.session_state.ptm_enabled and ptm_dict:
-                    selected_unimods = [um for um in st.session_state.selected_unimods if um in ptm_dict]
-                    for um in selected_unimods:
-                        positions = ptm_dict[um]
-                        config = st.session_state.ptm_configs.get(um, {})
-                        final_ptm[um] = {
-                            "positions": positions,
-                            "color": config.get("color", "#3700FF"),
-                            "label": config.get("label", um),
-                            "selected": config.get("selected", True),
-                        }
-                    if not final_ptm:
-                        st.info("No selected UniMod IDs were found in this protein/peptide set.")
+                    all_unimods = sorted(ptm_dict.keys(), key=lambda x: int(re.search(r'\d+', str(x)).group()) if re.search(r'\d+', str(x)) else 999999)
+                    if all_unimods:
+                        st.markdown("### PTM Configuration")
+                        
+                        if 'ptm_configs' not in st.session_state:
+                            st.session_state.ptm_configs = {}
+                            
+                        enriched = _cached_fetch_unimod_data(tuple(all_unimods))
+                        ngl_sync.seed_ptm_config_defaults(st.session_state.ptm_configs, all_unimods, enriched)
+
+                        for um in all_unimods:
+                            positions = ptm_dict[um]
+                            match = re.search(r"\d+", str(um))
+                            default_label = f"UniMod:{match.group()}" if match else str(um)
+
+                            if um not in st.session_state.ptm_configs:
+                                st.session_state.ptm_configs[um] = {'selected': True, 'label': default_label, 'color': "#0024FF"}
+
+                            colA, colB, colC = st.columns([2, 1, 1])
+                            with colA:
+                                current_label = st.session_state.ptm_configs[um]['label']
+                                st.write(f"**{current_label}** at positions: {', '.join(map(str, sorted(positions)[:10]))}{', ...' if len(positions)>10 else ''}")
+                            with colB:
+                                st.session_state.ptm_configs[um]['color'] = st.color_picker(f"Color##{um}", value=st.session_state.ptm_configs[um]['color'], key=f"ptmcol_{um}")
+                            with colC:
+                                st.session_state.ptm_configs[um]['label'] = st.text_input(f"Custom name for {um}", value=st.session_state.ptm_configs[um]['label'], key=f"ptmlabel_{um}")
+
+                            final_ptm[um] = {
+                                "positions": positions,
+                                "color": st.session_state.ptm_configs[um]['color'],
+                                "label": st.session_state.ptm_configs[um]['label'],
+                                "selected": st.session_state.ptm_configs[um]['selected']
+                            }
+                    else:
+                        st.info("No PTMs detected.")
                 else:
                     final_ptm = None
 
@@ -5013,13 +5043,27 @@ with quant_diff_tab:
                 st.markdown(f"🔗 Explore DisProt: {link_html}", unsafe_allow_html=True)
                 
                 # ---- NEW: also normalize the protein-level fallback ----
-                if 'protein_ptms' in locals() and protein_ptms:
-                    protein_ptms = normalize_ptm_data(protein_ptms)
-                
-                selected_cmap = st.session_state.cmap
-                selected_not_mapped_color = st.session_state.not_mapped_color
-                render_synced_viewers(pdb_str, viewer_residue_data, st.session_state.bg_color, conditions, selected_cmap, selected_not_mapped_color, viewer_ptm_data)
-                st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
+               if 'protein_ptms' in locals() and protein_ptms:
+                            protein_ptms = normalize_ptm_data(protein_ptms)
+
+                        engine = st.radio("3D Engine", ["NGL (Synced)", "py3Dmol (Classic)"], key="diff_engine")
+                        if engine.startswith("NGL"):
+                            backbone = "cpk" if st.radio("Backbone", ["Ribbon", "CPK"], key="diff_backbone", horizontal=True) == "CPK" else "ribbon"
+                            overall_vmin = min(min_max_logs[c][0] for c in conditions)
+                            overall_vmax = max(min_max_logs[c][1] for c in conditions)
+                            label = "Log2 Fold Change" if visualize_by == "Fold Change" else "-Log10 P-value"
+                            ngl_sync.render_ngl_synced_viewer(
+                                pdb_str=pdb_str, protein_seq=protein_seq, conditions=conditions,
+                                residue_data=dict(zip(conditions, viewer_residue_data)),
+                                ptm_data=dict(zip(conditions, viewer_ptm_data)),
+                                vmin=overall_vmin, vmax=overall_vmax,
+                                cmap_name=st.session_state.diff_selected_cmap,
+                                not_mapped_color=st.session_state.diff_not_mapped_color,
+                                backbone_style=backbone, key_suffix="_diff", value_label=label,
+                            )
+                        else:
+                            render_synced_viewers(pdb_str, viewer_residue_data, st.session_state.diff_bg_color, conditions, st.session_state.diff_selected_cmap, st.session_state.diff_not_mapped_color, viewer_ptm_data)
+                        st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
                 
                 # Calculate coverage for each condition
                 coverages = {}
