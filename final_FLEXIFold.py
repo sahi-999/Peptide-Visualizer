@@ -5048,7 +5048,7 @@ with quant_diff_tab:
                 st.markdown(f"🔗 Explore DisProt: {link_html}", unsafe_allow_html=True)
                 
                 # ---- NEW: also normalize the protein-level fallback ----
-               if 'protein_ptms' in locals() and protein_ptms:
+                if 'protein_ptms' in locals() and protein_ptms:
                             protein_ptms = normalize_ptm_data(protein_ptms)
 
                         engine = st.radio("3D Engine", ["NGL (Synced)", "py3Dmol (Classic)"], key="diff_engine")
