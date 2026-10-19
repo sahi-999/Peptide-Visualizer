@@ -5048,28 +5048,28 @@ with quant_diff_tab:
                 st.markdown(f"🔗 Explore DisProt: {link_html}", unsafe_allow_html=True)
                 
                 # ---- NEW: also normalize the protein-level fallback ----
-                        if 'protein_ptms' in locals() and protein_ptms:
-                            protein_ptms = normalize_ptm_data(protein_ptms)
+                if 'protein_ptms' in locals() and protein_ptms:
+                    protein_ptms = normalize_ptm_data(protein_ptms)
 
-                        engine = st.radio("3D Engine", ["NGL (Synced)", "py3Dmol (Classic)"], key="diff_engine")
-                        if engine.startswith("NGL"):
-                            backbone = "cpk" if st.radio("Backbone", ["Ribbon", "CPK"], key="diff_backbone", horizontal=True) == "CPK" else "ribbon"
-                            overall_vmin = min(min_max_logs[c][0] for c in conditions)
-                            overall_vmax = max(min_max_logs[c][1] for c in conditions)
-                            label = "Log2 Fold Change" if visualize_by == "Fold Change" else "-Log10 P-value"
-                            ngl_sync.render_ngl_synced_viewer(
-                                pdb_str=pdb_str, protein_seq=protein_seq, conditions=conditions,
-                                residue_data=dict(zip(conditions, viewer_residue_data)),
-                                ptm_data=dict(zip(conditions, viewer_ptm_data)),
-                                vmin=overall_vmin, vmax=overall_vmax,
-                                cmap_name=st.session_state.diff_selected_cmap,
-                                not_mapped_color=st.session_state.diff_not_mapped_color,
-                                backbone_style=backbone, key_suffix="_diff", value_label=label,
-                            )
-                        else:
-                            render_synced_viewers(pdb_str, viewer_residue_data, st.session_state.diff_bg_color, conditions, st.session_state.diff_selected_cmap, st.session_state.diff_not_mapped_color, viewer_ptm_data)
-                        
-                        st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
+                engine = st.radio("3D Engine", ["NGL (Synced)", "py3Dmol (Classic)"], key="diff_engine")
+                if engine.startswith("NGL"):
+                    backbone = "cpk" if st.radio("Backbone", ["Ribbon", "CPK"], key="diff_backbone", horizontal=True) == "CPK" else "ribbon"
+                    overall_vmin = min(min_max_logs[c][0] for c in conditions)
+                    overall_vmax = max(min_max_logs[c][1] for c in conditions)
+                    label = "Log2 Fold Change" if visualize_by == "Fold Change" else "-Log10 P-value"
+                    ngl_sync.render_ngl_synced_viewer(
+                        pdb_str=pdb_str, protein_seq=protein_seq, conditions=conditions,
+                        residue_data=dict(zip(conditions, viewer_residue_data)),
+                        ptm_data=dict(zip(conditions, viewer_ptm_data)),
+                        vmin=overall_vmin, vmax=overall_vmax,
+                        cmap_name=st.session_state.diff_selected_cmap,
+                        not_mapped_color=st.session_state.diff_not_mapped_color,
+                        backbone_style=backbone, key_suffix="_diff", value_label=label,
+                    )
+                else:
+                    render_synced_viewers(pdb_str, viewer_residue_data, st.session_state.diff_bg_color, conditions, st.session_state.diff_selected_cmap, st.session_state.diff_not_mapped_color, viewer_ptm_data)
+                
+                st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
                 # Calculate coverage for each condition
                 coverages = {}
                 for cond in conditions:
