@@ -5048,7 +5048,7 @@ with quant_diff_tab:
                 st.markdown(f"🔗 Explore DisProt: {link_html}", unsafe_allow_html=True)
                 
                 # ---- NEW: also normalize the protein-level fallback ----
-                if 'protein_ptms' in locals() and protein_ptms:
+                        if 'protein_ptms' in locals() and protein_ptms:
                             protein_ptms = normalize_ptm_data(protein_ptms)
 
                         engine = st.radio("3D Engine", ["NGL (Synced)", "py3Dmol (Classic)"], key="diff_engine")
@@ -5068,8 +5068,8 @@ with quant_diff_tab:
                             )
                         else:
                             render_synced_viewers(pdb_str, viewer_residue_data, st.session_state.diff_bg_color, conditions, st.session_state.diff_selected_cmap, st.session_state.diff_not_mapped_color, viewer_ptm_data)
+                        
                         st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
-                
                 # Calculate coverage for each condition
                 coverages = {}
                 for cond in conditions:
