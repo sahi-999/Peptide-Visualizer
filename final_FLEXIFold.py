@@ -1043,6 +1043,7 @@ def render_linear_plot(residue_vals, title, seq_len, vmin, vmax, protein_seq, mo
         except Exception:
             legend_html = ""
     extra_top_space = 30
+                           
     # Draw bars first, then PTM lollipops and labels on top so markers are visible
     svg = f'<svg viewBox="-{x_offset} 0 {int(total_width + x_offset*2 + 40)} {int(total_height + extra_top_space + 40)}" width="100%" preserveAspectRatio="xMinYMid meet" ' \
         f'style="overflow:visible; background:#fff; border:1px solid #ddd; border-radius:6px; padding:20px;">' \
@@ -1050,10 +1051,9 @@ def render_linear_plot(residue_vals, title, seq_len, vmin, vmax, protein_seq, mo
     container_html = f'<div style="overflow-x:auto; max-width:100%; margin:10px 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">{svg}</div>'
     # combine title, legend and svg
     # legend_html may be empty if no PTMs configured
-   container_html = f'<div style="overflow-x:auto; max-width:100%; margin:10px 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">{svg}</div>'
+    container_html = f'<div style="overflow-x:auto; max-width:100%; margin:10px 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">{svg}</div>'
     
-    # combine title, legend and svg
-    # legend_html may be empty if no PTMs configured
+
     js = f"""
     <script>
     const mapped = {mapped_js};
