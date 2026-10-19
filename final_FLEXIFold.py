@@ -1050,7 +1050,11 @@ def render_linear_plot(residue_vals, title, seq_len, vmin, vmax, protein_seq, mo
     container_html = f'<div style="overflow-x:auto; max-width:100%; margin:10px 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">{svg}</div>'
     # combine title, legend and svg
     # legend_html may be empty if no PTMs configured
-   js = f"""
+   container_html = f'<div style="overflow-x:auto; max-width:100%; margin:10px 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">{svg}</div>'
+    
+    # combine title, legend and svg
+    # legend_html may be empty if no PTMs configured
+    js = f"""
     <script>
     const mapped = {mapped_js};
     const rects = document.querySelectorAll('rect[data-pos]');
@@ -1087,6 +1091,7 @@ def render_linear_plot(residue_vals, title, seq_len, vmin, vmax, protein_seq, mo
         }}
     }});
 
+    // ---- CSS for highlight ----
     const style = document.createElement('style');
     style.innerHTML = `
     .clicked-residue {{ filter: brightness(1.3); stroke: #FFD700 !important; stroke-width: 3 !important; }}
@@ -1095,7 +1100,7 @@ def render_linear_plot(residue_vals, title, seq_len, vmin, vmax, protein_seq, mo
     </script>
     """
     st.components.v1.html(title_html + legend_html + container_html + js, height=container_height+20)
-    return None,None
+    return None, None
 
 def render_synced_viewers(pdb_str, residue_vals_list, bg_color, title_list, cmap_name='autumn', not_mapped_color='#d3d3d3', ptm_data_list=None):
     num_conditions = len(residue_vals_list)
