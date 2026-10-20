@@ -28,11 +28,15 @@ from bs4 import BeautifulSoup
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 import plotly.graph_objects as go
+import ngl_sync_viewer as ngl_sync
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 st.set_page_config(page_title="FLEXIfold", page_icon="⚛️", layout="wide")
 
+@st.cache_data(show_spinner=False)
+def _cached_fetch_unimod_data(unimod_ids: tuple):
+    return ngl_sync.fetch_unimod_data(unimod_ids)
 DEFAULT_APP_STATE = {
     "main_tab": "Qualitative Analysis",
     "active_quant_tab": "single",
@@ -2125,8 +2129,6 @@ with main_tab[0]:
                     ptm_col=ptm_col,
                     apply_tryptic=st.session_state.apply_tryptic
                 )
-
-            
                 # === Build PTM data with API Fetch ===
                 final_ptm = {}
                 if st.session_state.ptm_enabled and ptm_dict:
@@ -2153,9 +2155,9 @@ with main_tab[0]:
                                 current_label = st.session_state.ptm_configs[um]['label']
                                 st.write(f"**{current_label}** at positions: {', '.join(map(str, sorted(positions)[:10]))}{', ...' if len(positions)>10 else ''}")
                             with colB:
-                                st.session_state.ptm_configs[um]['color'] = st.color_picker(f"Color##{um}", value=st.session_state.ptm_configs[um]['color'], key=f"ptmcol_{um}")
+                                st.session_state.ptm_configs[um]['color'] = st.color_picker(f"Color##{um}", value=st.session_state.ptm_configs[um]['color'], key=f"qual_ptmcol_{um}")
                             with colC:
-                                st.session_state.ptm_configs[um]['label'] = st.text_input(f"Custom name for {um}", value=st.session_state.ptm_configs[um]['label'], key=f"ptmlabel_{um}")
+                                st.session_state.ptm_configs[um]['label'] = st.text_input(f"Custom name for {um}", value=st.session_state.ptm_configs[um]['label'], key=f"qual_ptmlabel_{um}")
 
                             final_ptm[um] = {
                                 "positions": positions,
@@ -2322,21 +2324,45 @@ with main_tab[1]:
                     if not hasattr(residue_vals, '__len__') or len(residue_vals) == 0:
                         st.warning("No residue values were mapped. Color will be uniform.")
                         residue_vals = [0.0] * len(protein_seq)   # or whatever fallback makes sense
-                    # === Build PTM data ===
+            
+                    # === Build PTM data with API Fetch ===
                     final_ptm = {}
                     if st.session_state.ptm_enabled and ptm_dict:
-                        selected_unimods = [um for um in st.session_state.selected_unimods if um in ptm_dict]
-                        for um in selected_unimods:
-                            positions = ptm_dict[um]
-                            config = st.session_state.ptm_configs.get(um, {})
-                            final_ptm[um] = {
-                                "positions": positions,
-                                "color": config.get("color", "#3700FF"),
-                                "label": config.get("label", um),
-                                "selected": config.get("selected", True),
-                            }
-                        if not final_ptm:
-                            st.info("No selected UniMod IDs were found in this protein/peptide set.")
+                        all_unimods = sorted(ptm_dict.keys(), key=lambda x: int(re.search(r'\d+', str(x)).group()) if re.search(r'\d+', str(x)) else 999999)
+                        if all_unimods:
+                            st.markdown("### PTM Configuration")
+                            
+                            if 'ptm_configs' not in st.session_state:
+                                st.session_state.ptm_configs = {}
+                                
+                            enriched = _cached_fetch_unimod_data(tuple(all_unimods))
+                            ngl_sync.seed_ptm_config_defaults(st.session_state.ptm_configs, all_unimods, enriched)
+
+                            for um in all_unimods:
+                                positions = ptm_dict[um]
+                                match = re.search(r"\d+", str(um))
+                                default_label = f"UniMod:{match.group()}" if match else str(um)
+
+                                if um not in st.session_state.ptm_configs:
+                                    st.session_state.ptm_configs[um] = {'selected': True, 'label': default_label, 'color': "#0024FF"}
+
+                                colA, colB, colC = st.columns([2, 1, 1])
+                                with colA:
+                                    current_label = st.session_state.ptm_configs[um]['label']
+                                    st.write(f"**{current_label}** at positions: {', '.join(map(str, sorted(positions)[:10]))}{', ...' if len(positions)>10 else ''}")
+                                with colB:
+                                    st.session_state.ptm_configs[um]['color'] = st.color_picker(f"Color##{um}", value=st.session_state.ptm_configs[um]['color'], key=f"quant_single_ptmcol_{um}")
+                                with colC:
+                                    st.session_state.ptm_configs[um]['label'] = st.text_input(f"Custom name for {um}", value=st.session_state.ptm_configs[um]['label'], key=f"quant_single_ptmlabel_{um}")
+
+                                final_ptm[um] = {
+                                    "positions": positions,
+                                    "color": st.session_state.ptm_configs[um]['color'],
+                                    "label": st.session_state.ptm_configs[um]['label'],
+                                    "selected": st.session_state.ptm_configs[um]['selected']
+                                }
+                        else:
+                            st.info("No PTMs detected.")
                     else:
                         final_ptm = None
 
@@ -3350,7 +3376,7 @@ with main_tab[1]:
                             f'</div>',
                             unsafe_allow_html=True
                         )
-                        # ---------- DisProt ----------
+                        
                         # ---------- DisProt ----------
                         disprot_info   = get_disprot_info(base_id)
                         disorder_percent = disprot_info.get("disorder_percent")
@@ -3405,8 +3431,24 @@ with main_tab[1]:
                         # ---- NEW: also normalize the protein-level fallback ----
                         if 'protein_ptms' in locals() and protein_ptms:
                             protein_ptms = normalize_ptm_data(protein_ptms)
-
-                        render_synced_viewers(pdb_str, viewer_residue_data, bg_color, conditions, selected_cmap, selected_not_mapped_color, viewer_ptm_data)
+        
+                        engine = st.radio("3D Engine", ["NGL (Synced)", "py3Dmol (Classic)"], key="diff_engine")
+                        if engine.startswith("NGL"):
+                            backbone = "cpk" if st.radio("Backbone", ["Ribbon", "CPK"], key="diff_backbone", horizontal=True) == "CPK" else "ribbon"
+                            overall_vmin = min(min_max_logs[c][0] for c in conditions)
+                            overall_vmax = max(min_max_logs[c][1] for c in conditions)
+                            label = "Log2 Fold Change" if visualize_by == "Fold Change" else "-Log10 P-value"
+                            ngl_sync.render_ngl_synced_viewer(
+                                pdb_str=pdb_str, protein_seq=protein_seq, conditions=conditions,
+                                residue_data=dict(zip(conditions, viewer_residue_data)),
+                                ptm_data=dict(zip(conditions, viewer_ptm_data)),
+                                vmin=overall_vmin, vmax=overall_vmax,
+                                cmap_name=st.session_state.diff_selected_cmap,
+                                not_mapped_color=st.session_state.diff_not_mapped_color,
+                                backbone_style=backbone, key_suffix="_diff", value_label=label,
+                            )
+                        else:
+                            render_synced_viewers(pdb_str, viewer_residue_data, st.session_state.diff_bg_color, conditions, st.session_state.diff_selected_cmap, st.session_state.diff_not_mapped_color, viewer_ptm_data)
                         st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
                         
                         # Calculate coverage for each condition
