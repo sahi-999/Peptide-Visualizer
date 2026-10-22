@@ -2226,13 +2226,26 @@ with main_tab[0]:
                     )
                 # === 3D Viewer ===
                 st.subheader("3D Structure Visualization")
-                render_single_3d_viewer(
-                    pdb_str,
-                    residue_vals,
-                    intensity_col,
-                    "autumn",
-                    "#A7A5A5",
-                    final_ptm
+                if st.session_state.engine.startswith("NGL"):
+                    ngl_sync.render_ngl_synced_viewer(
+                        pdb_str=pdb_str, protein_seq=protein_seq,
+                        conditions=[intensity_col],
+                        residue_data={intensity_col: residue_vals},
+                        ptm_data={intensity_col: (final_ptm or {})},
+                        vmin=-3, vmax=3, 
+                        cmap_name=st.session_state.cmap, 
+                        not_mapped_color=st.session_state.not_mapped_color,
+                        backbone_style=st.session_state.backbone_style, 
+                        key_suffix="_qual",
+                    )
+                else:render_single_3d_viewer(
+                        pdb_str,
+                        residue_vals,
+                        intensity_col,
+                        st.session_state.cmap,
+                        st.session_state.not_mapped_color,
+                        final_ptm,
+                        bg_color=st.session_state.bg_color
                 )
 
                 # === Linear Plot — Beautiful Z-score Style ===
@@ -2435,13 +2448,27 @@ with main_tab[1]:
                 }
                     # === 3D Viewer ===
                 st.subheader("3D Structure Visualization")
-                render_single_3d_viewer(
+                if st.session_state.engine.startswith("NGL"):
+                    ngl_sync.render_ngl_synced_viewer(
+                        pdb_str=pdb_str, protein_seq=protein_seq,
+                        conditions=[intensity_col],
+                        residue_data={intensity_col: residue_vals},
+                        ptm_data={intensity_col: (final_ptm or {})},
+                        vmin=-3, vmax=3, 
+                        cmap_name=st.session_state.cmap, 
+                        not_mapped_color=st.session_state.not_mapped_color,
+                        backbone_style=st.session_state.backbone_style, 
+                        key_suffix="_quantsingle",
+                    )
+                else:
+                    render_single_3d_viewer(
                         pdb_str,
                         residue_vals,
                         intensity_col,
-                        "autumn",
-                        "#A7A5A5",
-                        final_ptm
+                        st.session_state.cmap,
+                        st.session_state.not_mapped_color,
+                        final_ptm,
+                        bg_color=st.session_state.bg_color
                     )
 
                 # === Linear Plot —  Z-score Style ===
@@ -3457,7 +3484,7 @@ with main_tab[1]:
         
                         #engine = st.radio("3D Engine", ["NGL (Synced)", "py3Dmol (Classic)"], key="quant_multi_engine")
                         if st.session_state.engine.startswith("NGL"):
-                            backbone = "cpk" if st.radio("Backbone", ["Ribbon", "CPK"], key="quant_multi_backbone", horizontal=True) == "CPK" else "ribbon"
+                            #backbone = "cpk" if st.radio("Backbone", ["Ribbon", "CPK"], key="quant_multi_backbone", horizontal=True) == "CPK" else "ribbon"
                             all_vals = [v for res in viewer_residue_data for v in res if v is not None]
                             if st.session_state.is_frequency:
                                 vmn = min(all_vals, default=0); vmx = max(all_vals, default=1)
@@ -3469,7 +3496,7 @@ with main_tab[1]:
                                 residue_data=dict(zip(conditions, viewer_residue_data)),
                                 ptm_data=dict(zip(conditions, viewer_ptm_data)),
                                 vmin=vmn, vmax=vmx, cmap_name=selected_cmap, not_mapped_color=selected_not_mapped_color,
-                                backbone_style=backbone, key_suffix="_quantmulti",
+                                backbone_style=st.session_state.backbone_style, key_suffix="_quantmulti",
                                 value_label="Frequency-Z" if st.session_state.is_frequency else "Z-Score",
                             )
                         else:
@@ -5120,7 +5147,7 @@ with quant_diff_tab:
 
                 #engine = st.radio("3D Engine", ["NGL (Synced)", "py3Dmol (Classic)"], key="diff_engine")
                 if st.session_state.engine.startswith("NGL"):
-                    backbone = "cpk" if st.radio("Backbone", ["Ribbon", "CPK"], key="diff_backbone", horizontal=True) == "CPK" else "ribbon"
+                    #backbone = "cpk" if st.radio("Backbone", ["Ribbon", "CPK"], key="diff_backbone", horizontal=True) == "CPK" else "ribbon"
                     overall_vmin = min(min_max_logs[c][0] for c in conditions)
                     overall_vmax = max(min_max_logs[c][1] for c in conditions)
                     label = "Log2 Fold Change" if visualize_by == "Fold Change" else "-Log10 P-value"
@@ -5131,7 +5158,7 @@ with quant_diff_tab:
                         vmin=overall_vmin, vmax=overall_vmax,
                         cmap_name=st.session_state.diff_selected_cmap,
                         not_mapped_color=st.session_state.diff_not_mapped_color,
-                        backbone_style=backbone, key_suffix="_diff", value_label=label,
+                        backbone_style=st.session_state.backbone_style, key_suffix="_diff", value_label=label,
                     )
                 else:
                     render_synced_viewers(pdb_str, viewer_residue_data, st.session_state.diff_bg_color, conditions, st.session_state.diff_selected_cmap, st.session_state.diff_not_mapped_color, viewer_ptm_data)
