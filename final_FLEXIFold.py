@@ -118,17 +118,24 @@ def render_sidebar():
                     key="global_selected_unimods",
                     help="Pick the UniMod IDs you want annotated on the structure.",
                 )
-
                 if st.session_state.selected_unimods:
+                    enriched = _cached_fetch_unimod_data(tuple(st.session_state.selected_unimods))
+                    if "ptm_configs" not in st.session_state:
+                        st.session_state.ptm_configs = {}
+                    ngl_sync.seed_ptm_config_defaults(st.session_state.ptm_configs, st.session_state.selected_unimods, enriched)
+    
                     for um in st.session_state.selected_unimods:
                         if um not in st.session_state.ptm_configs:
+                            match = re.search(r"\d+", str(um))
+                            default_label = f"UniMod:{match.group()}" if match else str(um)
                             st.session_state.ptm_configs[um] = {
                                 "selected": True,
-                                "label": um,
+                                "label": default_label,
                                 "color": "#3700FF",
                             }
+                        
                         st.session_state.ptm_configs[um]["color"] = st.color_picker(
-                            f"Color for {um}",
+                            f"Color for {st.session_state.ptm_configs[um]['label']} ({um})",
                             value=st.session_state.ptm_configs[um]["color"],
                             key=f"ptm_color_{um}",
                         )
@@ -157,6 +164,22 @@ def render_sidebar():
 
         st.divider()
         st.subheader("Appearance settings")
+        # --- 3D ENGINE & BACKBONE ---
+        if "engine" not in st.session_state:
+            st.session_state.engine = "NGL (Synced)"
+        if "backbone_style" not in st.session_state:
+            st.session_state.backbone_style = "ribbon"
+
+        st.session_state.engine = st.radio(
+            "3D Engine", 
+            ["NGL (Synced)", "py3Dmol (Classic)"],
+            index=0 if st.session_state.engine == "NGL (Synced)" else 1,
+            help="NGL supports linked 2D-to-3D interaction. py3Dmol is faster for large structures."
+        )
+        if st.session_state.engine.startswith("NGL"):
+            _bb = st.radio("Backbone Style", ["Ribbon", "CPK"], horizontal=True, index=0 if st.session_state.backbone_style == "ribbon" else 1)
+            st.session_state.backbone_style = "cpk" if _bb == "CPK" else "ribbon"
+            
         if "cmap" not in st.session_state:
             st.session_state.cmap = "autumn"
         if "bg_color" not in st.session_state:
@@ -3432,8 +3455,8 @@ with main_tab[1]:
                         if 'protein_ptms' in locals() and protein_ptms:
                             protein_ptms = normalize_ptm_data(protein_ptms)
         
-                        engine = st.radio("3D Engine", ["NGL (Synced)", "py3Dmol (Classic)"], key="quant_multi_engine")
-                        if engine.startswith("NGL"):
+                        #engine = st.radio("3D Engine", ["NGL (Synced)", "py3Dmol (Classic)"], key="quant_multi_engine")
+                        if st.session_state.engine.startswith("NGL"):
                             backbone = "cpk" if st.radio("Backbone", ["Ribbon", "CPK"], key="quant_multi_backbone", horizontal=True) == "CPK" else "ribbon"
                             all_vals = [v for res in viewer_residue_data for v in res if v is not None]
                             if st.session_state.is_frequency:
@@ -5095,8 +5118,8 @@ with quant_diff_tab:
                 if 'protein_ptms' in locals() and protein_ptms:
                     protein_ptms = normalize_ptm_data(protein_ptms)
 
-                engine = st.radio("3D Engine", ["NGL (Synced)", "py3Dmol (Classic)"], key="diff_engine")
-                if engine.startswith("NGL"):
+                #engine = st.radio("3D Engine", ["NGL (Synced)", "py3Dmol (Classic)"], key="diff_engine")
+                if st.session_state.engine.startswith("NGL"):
                     backbone = "cpk" if st.radio("Backbone", ["Ribbon", "CPK"], key="diff_backbone", horizontal=True) == "CPK" else "ribbon"
                     overall_vmin = min(min_max_logs[c][0] for c in conditions)
                     overall_vmax = max(min_max_logs[c][1] for c in conditions)
