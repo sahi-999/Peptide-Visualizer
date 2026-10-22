@@ -2130,6 +2130,9 @@ with main_tab[0]:
         )
 
         # --- DETECT PTMS ONLY FOR SELECTED PROTEIN ---
+        if not selected_protein:
+            st.warning("Please select a protein to continue.")
+            st.stop()
         if st.session_state.combine_isoforms == "yes":
             iso_pattern = re.escape(selected_protein) + r'(?:-\d+)?$'
             isoforms = df[df['Protein.Group'].str.contains(iso_pattern, regex=True)]['Protein.Group'].unique()
@@ -2322,6 +2325,9 @@ with main_tab[1]:
                 key="selected_protein_global"
             )
             # --- DETECT PTMS ONLY FOR SELECTED PROTEIN ---
+            if not selected_protein:
+                st.warning("Please select a protein to continue.")
+                st.stop()
             if st.session_state.combine_isoforms == "yes":
                 iso_pattern = re.escape(selected_protein) + r'(?:-\d+)?$'
                 isoforms = df[df['Protein.Group'].str.contains(iso_pattern, regex=True)]['Protein.Group'].unique()
@@ -2860,6 +2866,9 @@ with main_tab[1]:
                         )
                         #st.info("Protein selection, isoform merging, overlap strategy, and PDB source are managed in the sidebar.")
                         # --- DETECT PTMS ONLY FOR SELECTED PROTEIN ---
+                        if not selected_protein:
+                            st.warning("Please select a protein to continue.")
+                            st.stop()
                         if st.session_state.combine_isoforms == "yes":
                             iso_pattern = re.escape(selected_protein) + r'(?:-\d+)?$'
                             isoforms = df[df['Protein.Group'].str.contains(iso_pattern, regex=True)]['Protein.Group'].unique()
@@ -4570,6 +4579,9 @@ with quant_diff_tab:
                 protein_options = sorted(df['Protein.Group'].unique())
                 # Present local protein selector here (under the differential workflow UI)
                 selected_protein = st.selectbox("Select Protein", protein_options, key="diff_protein_select")
+                if not selected_protein:
+                    st.warning("Please select a protein to continue.")
+                    st.stop()
                 if st.session_state.combine_isoforms == "yes":
                     iso_pattern = re.escape(selected_protein) + r'(?:-\d+)?$'
                     isoforms = df[df['Protein.Group'].str.contains(iso_pattern, regex=True)]['Protein.Group'].unique()
