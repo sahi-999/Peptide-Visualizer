@@ -2107,6 +2107,16 @@ with main_tab[0]:
 
     if csv_file and fasta_file:
         df = pd.read_csv(csv_file)
+        ptm_col_candidates = [c for c in ['Modified.Sequence', 'PTM'] if c in df.columns]
+        if ptm_col_candidates:
+            col_series = df[ptm_col_candidates[0]].dropna().astype(str)
+            if col_series.str.contains('UniMod:', case=False).any():
+                all_text = ' '.join(col_series.tolist())
+                st.session_state.all_unimods = sorted(set(re.findall(r'UniMod:\d+', all_text)))
+            else:
+                st.session_state.all_unimods = []
+        else:
+            st.session_state.all_unimods = []
         fasta_str = fasta_file.getvalue().decode("utf-8")
         records = list(SeqIO.parse(io.StringIO(fasta_str), "fasta"))
 
@@ -2152,44 +2162,21 @@ with main_tab[0]:
                     ptm_col=ptm_col,
                     apply_tryptic=st.session_state.apply_tryptic
                 )
-                # === Build PTM data with API Fetch ===
+                # === Build PTM data from Sidebar Configs ===
                 final_ptm = {}
                 if st.session_state.ptm_enabled and ptm_dict:
-                    all_unimods = sorted(ptm_dict.keys(), key=lambda x: int(re.search(r'\d+', str(x)).group()) if re.search(r'\d+', str(x)) else 999999)
-                    if all_unimods:
-                        st.markdown("### PTM Configuration")
-                        
-                        if 'ptm_configs' not in st.session_state:
-                            st.session_state.ptm_configs = {}
-                            
-                        enriched = _cached_fetch_unimod_data(tuple(all_unimods))
-                        ngl_sync.seed_ptm_config_defaults(st.session_state.ptm_configs, all_unimods, enriched)
-
-                        for um in all_unimods:
-                            positions = ptm_dict[um]
-                            match = re.search(r"\d+", str(um))
-                            default_label = f"UniMod:{match.group()}" if match else str(um)
-
-                            if um not in st.session_state.ptm_configs:
-                                st.session_state.ptm_configs[um] = {'selected': True, 'label': default_label, 'color': "#0024FF"}
-
-                            colA, colB, colC = st.columns([2, 1, 1])
-                            with colA:
-                                current_label = st.session_state.ptm_configs[um]['label']
-                                st.write(f"**{current_label}** at positions: {', '.join(map(str, sorted(positions)[:10]))}{', ...' if len(positions)>10 else ''}")
-                            with colB:
-                                st.session_state.ptm_configs[um]['color'] = st.color_picker(f"Color##{um}", value=st.session_state.ptm_configs[um]['color'], key=f"qual_ptmcol_{um}")
-                            with colC:
-                                st.session_state.ptm_configs[um]['label'] = st.text_input(f"Custom name for {um}", value=st.session_state.ptm_configs[um]['label'], key=f"qual_ptmlabel_{um}")
-
-                            final_ptm[um] = {
-                                "positions": positions,
-                                "color": st.session_state.ptm_configs[um]['color'],
-                                "label": st.session_state.ptm_configs[um]['label'],
-                                "selected": st.session_state.ptm_configs[um]['selected']
-                            }
-                    else:
-                        st.info("No PTMs detected.")
+                    selected_unimods = [um for um in st.session_state.get("selected_unimods", []) if um in ptm_dict]
+                    for um in selected_unimods:
+                        positions = ptm_dict[um]
+                        config = st.session_state.ptm_configs.get(um, {})
+                        final_ptm[um] = {
+                            "positions": positions,
+                            "color": config.get("color", "#FF0000"),
+                            "label": config.get("label", um),
+                            "selected": config.get("selected", True),
+                        }
+                    if not final_ptm:
+                        st.info("No selected UniMod IDs were found in this protein.")
                 else:
                     final_ptm = None
 
@@ -2309,6 +2296,16 @@ with main_tab[1]:
 
         if csv_file and fasta_file:
             df = pd.read_csv(csv_file)
+            ptm_col_candidates = [c for c in ['Modified.Sequence', 'PTM'] if c in df.columns]
+            if ptm_col_candidates:
+                col_series = df[ptm_col_candidates[0]].dropna().astype(str)
+                if col_series.str.contains('UniMod:', case=False).any():
+                    all_text = ' '.join(col_series.tolist())
+                    st.session_state.all_unimods = sorted(set(re.findall(r'UniMod:\d+', all_text)))
+                else:
+                    st.session_state.all_unimods = []
+            else:
+                st.session_state.all_unimods = []
             fasta_str = fasta_file.getvalue().decode("utf-8")
             records = list(SeqIO.parse(io.StringIO(fasta_str), "fasta"))
 
@@ -2360,45 +2357,22 @@ with main_tab[1]:
                     if not hasattr(residue_vals, '__len__') or len(residue_vals) == 0:
                         st.warning("No residue values were mapped. Color will be uniform.")
                         residue_vals = [0.0] * len(protein_seq)   # or whatever fallback makes sense
-            
-                    # === Build PTM data with API Fetch ===
+
+                    # === Build PTM data from Sidebar Configs ===
                     final_ptm = {}
                     if st.session_state.ptm_enabled and ptm_dict:
-                        all_unimods = sorted(ptm_dict.keys(), key=lambda x: int(re.search(r'\d+', str(x)).group()) if re.search(r'\d+', str(x)) else 999999)
-                        if all_unimods:
-                            st.markdown("### PTM Configuration")
-                            
-                            if 'ptm_configs' not in st.session_state:
-                                st.session_state.ptm_configs = {}
-                                
-                            enriched = _cached_fetch_unimod_data(tuple(all_unimods))
-                            ngl_sync.seed_ptm_config_defaults(st.session_state.ptm_configs, all_unimods, enriched)
-
-                            for um in all_unimods:
-                                positions = ptm_dict[um]
-                                match = re.search(r"\d+", str(um))
-                                default_label = f"UniMod:{match.group()}" if match else str(um)
-
-                                if um not in st.session_state.ptm_configs:
-                                    st.session_state.ptm_configs[um] = {'selected': True, 'label': default_label, 'color': "#0024FF"}
-
-                                colA, colB, colC = st.columns([2, 1, 1])
-                                with colA:
-                                    current_label = st.session_state.ptm_configs[um]['label']
-                                    st.write(f"**{current_label}** at positions: {', '.join(map(str, sorted(positions)[:10]))}{', ...' if len(positions)>10 else ''}")
-                                with colB:
-                                    st.session_state.ptm_configs[um]['color'] = st.color_picker(f"Color##{um}", value=st.session_state.ptm_configs[um]['color'], key=f"quant_single_ptmcol_{um}")
-                                with colC:
-                                    st.session_state.ptm_configs[um]['label'] = st.text_input(f"Custom name for {um}", value=st.session_state.ptm_configs[um]['label'], key=f"quant_single_ptmlabel_{um}")
-
-                                final_ptm[um] = {
-                                    "positions": positions,
-                                    "color": st.session_state.ptm_configs[um]['color'],
-                                    "label": st.session_state.ptm_configs[um]['label'],
-                                    "selected": st.session_state.ptm_configs[um]['selected']
-                                }
-                        else:
-                            st.info("No PTMs detected.")
+                        selected_unimods = [um for um in st.session_state.get("selected_unimods", []) if um in ptm_dict]
+                        for um in selected_unimods:
+                            positions = ptm_dict[um]
+                            config = st.session_state.ptm_configs.get(um, {})
+                            final_ptm[um] = {
+                                "positions": positions,
+                                "color": config.get("color", "#FF0000"),
+                                "label": config.get("label", um),
+                                "selected": config.get("selected", True),
+                            }
+                        if not final_ptm:
+                            st.info("No selected UniMod IDs were found in this protein.")
                     else:
                         final_ptm = None
 
