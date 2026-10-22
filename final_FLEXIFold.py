@@ -54,7 +54,7 @@ DEFAULT_APP_STATE = {
     "uploaded_pdb": None,
     "ptm_configs": {},
     "cmap": "autumn",
-    "st.session_state.bg_color": "black",
+    "bg_color": "black",
     "conditions_confirmed": {'single': False, 'multiple': False},
     "processed": {'single': False, 'multiple': False},
     "selected_residue": None,
@@ -185,7 +185,7 @@ def render_sidebar():
         if "cmap" not in st.session_state:
             st.session_state.cmap = "autumn"
         if "st.session_state.bg_color" not in st.session_state:
-            st.session_state.st.session_state.bg_color = "black"
+            st.session_state.bg_color = "black"
         if "not_mapped_color" not in st.session_state:
             st.session_state.not_mapped_color = "#d3d3d3"
 
@@ -195,16 +195,16 @@ def render_sidebar():
             cmap_options,
             index=cmap_options.index(st.session_state.cmap) if st.session_state.cmap in cmap_options else 0,
         )
-        st.session_state.st.session_state.bg_color = st.selectbox(
+        st.session_state.bg_color = st.selectbox(
             "3D Background",
             ["black", "white"],
-            index=0 if st.session_state.st.session_state.bg_color == "black" else 1,
+            index=0 if st.session_state.bg_color == "black" else 1,
         )
         st.session_state.not_mapped_color = st.color_picker(
             "Not Mapped Color",
             value=st.session_state.not_mapped_color,
         )
-        st.session_state.st.session_state.cmap = st.session_state.cmap
+        st.session_state.cmap = st.session_state.cmap
         st.caption("These settings apply across most 3D and linear visualizations.")
 def safe_stop():
     """Renders the sidebar before halting the script so it doesn't disappear."""
@@ -1684,7 +1684,7 @@ def render_single_3d_viewer(
     cmap_name_q='autumn',
     not_mapped_color='#d3d3d3',
     ptm_data=None,
-    st.session_state.bg_color='black'
+    bg_color='black'
 ):
     """
     Single 3D viewer with:
@@ -2245,7 +2245,7 @@ with main_tab[0]:
                         st.session_state.cmap,
                         st.session_state.not_mapped_color,
                         final_ptm,
-                        st.session_state.bg_color=st.session_state.st.session_state.bg_color
+                        bg_color=st.session_state.bg_color
                     )
 
                 # === Linear Plot — Beautiful Z-score Style ===
@@ -2463,7 +2463,7 @@ with main_tab[1]:
                         st.session_state.cmap,
                         st.session_state.not_mapped_color,
                         final_ptm,
-                        st.session_state.bg_color=st.session_state.st.session_state.bg_color
+                        bg_color=st.session_state.bg_color
                     )
 
                 # === Linear Plot —  Z-score Style ===
@@ -3175,8 +3175,8 @@ with main_tab[1]:
                     residue_data              = st.session_state.residue_data
                     ptm_data                  = st.session_state.ptm_data
                     pdb_str                   = st.session_state.pdb_str
-                    st.session_state.bg_color                  = st.session_state.st.session_state.bg_color
-                    st.session_state.cmap             = st.session_state.st.session_state.cmap
+                    bg_color                  = st.session_state.bg_color
+                    st.session_state.cmap             = st.session_state.cmap
                     st.session_state.not_mapped_color = st.session_state.not_mapped_color
                     min_max_logs              = st.session_state.min_max_logs
                     conditions                = st.session_state.conditions
@@ -4159,9 +4159,9 @@ with quant_diff_tab:
             "diff_model_name": None,
             "diff_mean_plddt": None,
             "diff_conditions": [],
-            "diff_st.session_state.bg_color": "black",
+            "st.session_state.bg_color": "black",
             "diff_cmap": "autumn",
-            "diff_st.session_state.cmap" : "autumn",
+            "st.session_state.cmap" : "autumn",
             "diff_not_mapped_color": "#d3d3d3",
             "diff_visualize_by": "Fold Change",
             "diff_gene_name": None,
@@ -5171,12 +5171,12 @@ with quant_diff_tab:
                         residue_data=dict(zip(conditions, viewer_residue_data)),
                         ptm_data=dict(zip(conditions, viewer_ptm_data)),
                         vmin=overall_vmin, vmax=overall_vmax,
-                        cmap_name=st.session_state.diff_st.session_state.cmap,
+                        cmap_name=st.session_state.cmap,
                         not_mapped_color=st.session_state.diff_not_mapped_color,
                         backbone_style=st.session_state.backbone_style, key_suffix="_diff", value_label=label,
                     )
                 else:
-                    render_synced_viewers(pdb_str, viewer_residue_data, st.session_state.diff_st.session_state.bg_color, conditions, st.session_state.diff_st.session_state.cmap, st.session_state.diff_not_mapped_color, viewer_ptm_data)
+                    render_synced_viewers(pdb_str, viewer_residue_data, st.session_state.diff_bg_color, conditions, st.session_state.cmap, st.session_state.diff_not_mapped_color, viewer_ptm_data)
                 
                 st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
                 # Calculate coverage for each condition
