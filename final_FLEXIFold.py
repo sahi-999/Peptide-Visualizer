@@ -204,9 +204,6 @@ def render_sidebar():
         )
         st.session_state.selected_cmap = st.session_state.cmap
         st.caption("These settings apply across most 3D and linear visualizations.")
-
-
-render_sidebar()
     
 from functools import lru_cache
 from typing import Optional, Dict, Any, List
@@ -2067,7 +2064,6 @@ st.markdown(
 # Main tabs (Qualitative vs Quantitative)
 # ----------------------------------------------------------------------
 main_tab = st.tabs(["Qualitative Analysis", "Quantitative Analysis"])
-
 # Determine which main tab is active
 if main_tab[0].is_selected:
     st.session_state.main_tab = "Qualitative Analysis"
@@ -2107,16 +2103,6 @@ with main_tab[0]:
 
     if csv_file and fasta_file:
         df = pd.read_csv(csv_file)
-        ptm_col_candidates = [c for c in ['Modified.Sequence', 'PTM'] if c in df.columns]
-        if ptm_col_candidates:
-            col_series = df[ptm_col_candidates[0]].dropna().astype(str)
-            if col_series.str.contains('UniMod:', case=False).any():
-                all_text = ' '.join(col_series.tolist())
-                st.session_state.all_unimods = sorted(set(re.findall(r'UniMod:\d+', all_text)))
-            else:
-                st.session_state.all_unimods = []
-        else:
-            st.session_state.all_unimods = []
         fasta_str = fasta_file.getvalue().decode("utf-8")
         records = list(SeqIO.parse(io.StringIO(fasta_str), "fasta"))
 
@@ -2141,6 +2127,23 @@ with main_tab[0]:
             key="selected_protein_global"
         )
 
+        # --- DETECT PTMS ONLY FOR SELECTED PROTEIN ---
+        if st.session_state.combine_isoforms == "yes":
+            iso_pattern = re.escape(selected_protein) + r'(?:-\d+)?$'
+            isoforms = df[df['Protein.Group'].str.contains(iso_pattern, regex=True)]['Protein.Group'].unique()
+            pre_selected_df = df[df['Protein.Group'].isin(isoforms)]
+        else:
+            pre_selected_df = df[df['Protein.Group'] == selected_protein]
+            
+        ptm_col_candidates = [c for c in ['Modified.Sequence', 'PTM'] if c in pre_selected_df.columns]
+        if ptm_col_candidates:
+            col_series = pre_selected_df[ptm_col_candidates[0]].dropna().astype(str)
+            all_text = ' '.join(col_series.tolist())
+            st.session_state.all_unimods = sorted(set(re.findall(r'UniMod:\d+', all_text)))
+        else:
+            st.session_state.all_unimods = []
+        # ---------------------------------------------
+
         combine_isoforms = st.session_state.combine_isoforms
         overlap_strategy = st.session_state.overlap_strategy
 
@@ -2162,6 +2165,7 @@ with main_tab[0]:
                     ptm_col=ptm_col,
                     apply_tryptic=st.session_state.apply_tryptic
                 )
+                
                 # === Build PTM data from Sidebar Configs ===
                 final_ptm = {}
                 if st.session_state.ptm_enabled and ptm_dict:
@@ -2225,7 +2229,8 @@ with main_tab[0]:
                         backbone_style=st.session_state.backbone_style, 
                         key_suffix="_qual",
                     )
-                else:render_single_3d_viewer(
+                else:
+                    render_single_3d_viewer(
                         pdb_str,
                         residue_vals,
                         intensity_col,
@@ -2233,7 +2238,7 @@ with main_tab[0]:
                         st.session_state.not_mapped_color,
                         final_ptm,
                         bg_color=st.session_state.bg_color
-                )
+                    )
 
                 # === Linear Plot — Beautiful Z-score Style ===
                 st.subheader("Linear Sequence Visualization")
@@ -2247,8 +2252,8 @@ with main_tab[0]:
                     model_name=intensity_col,
                     plddt_list=plddt_list,
                     mean_plddt=mean_plddt,
-                    cmap_name="autumn",                     # For intensity
-                    not_mapped_color="#A7A5A5",
+                    cmap_name=st.session_state.cmap,                      # For intensity
+                    not_mapped_color=st.session_state.not_mapped_color,
                     ptm_data=final_ptm
                 )
 
@@ -2296,16 +2301,6 @@ with main_tab[1]:
 
         if csv_file and fasta_file:
             df = pd.read_csv(csv_file)
-            ptm_col_candidates = [c for c in ['Modified.Sequence', 'PTM'] if c in df.columns]
-            if ptm_col_candidates:
-                col_series = df[ptm_col_candidates[0]].dropna().astype(str)
-                if col_series.str.contains('UniMod:', case=False).any():
-                    all_text = ' '.join(col_series.tolist())
-                    st.session_state.all_unimods = sorted(set(re.findall(r'UniMod:\d+', all_text)))
-                else:
-                    st.session_state.all_unimods = []
-            else:
-                st.session_state.all_unimods = []
             fasta_str = fasta_file.getvalue().decode("utf-8")
             records = list(SeqIO.parse(io.StringIO(fasta_str), "fasta"))
 
@@ -2324,6 +2319,21 @@ with main_tab[1]:
                     if st.session_state.selected_protein_global in proteins else 0,
                 key="selected_protein_global"
             )
+            # --- DETECT PTMS ONLY FOR SELECTED PROTEIN ---
+            if st.session_state.combine_isoforms == "yes":
+                iso_pattern = re.escape(selected_protein) + r'(?:-\d+)?$'
+                isoforms = df[df['Protein.Group'].str.contains(iso_pattern, regex=True)]['Protein.Group'].unique()
+                pre_selected_df = df[df['Protein.Group'].isin(isoforms)]
+            else:
+                pre_selected_df = df[df['Protein.Group'] == selected_protein]
+                
+            ptm_col_candidates = [c for c in ['Modified.Sequence', 'PTM'] if c in pre_selected_df.columns]
+            if ptm_col_candidates:
+                col_series = pre_selected_df[ptm_col_candidates[0]].dropna().astype(str)
+                all_text = ' '.join(col_series.tolist())
+                st.session_state.all_unimods = sorted(set(re.findall(r'UniMod:\d+', all_text)))
+            else:
+                st.session_state.all_unimods = []
             intensity_col = st.selectbox("Select Intensity Column (Condition Name)", num_cols, key="quant_intensity_col")
             if not num_cols:
                 st.error("No numeric intensity columns found in CSV.")
@@ -2759,15 +2769,6 @@ with main_tab[1]:
                             lambda row: aggregate_group(row.to_frame().T, cols, agg_choice),
                             axis=1
                         )
-                    if ptm_detected:
-                        st.session_state.all_unimods = unimods
-                    else:
-                        st.session_state.all_unimods = []
-                        st.session_state.selected_unimods = []
-
-                    if st.session_state.all_unimods and "selected_unimods" not in st.session_state:
-                        st.session_state.selected_unimods = []
-
                     has_ptm = bool(st.session_state.all_unimods)
                     if has_ptm:
                         st.info("PTM annotation options are available in the sidebar once UniMod IDs are detected.")
@@ -2855,7 +2856,22 @@ with main_tab[1]:
                                 if st.session_state.selected_protein_global in protein_options else 0,
                             key="selected_protein_global"
                         )
-                        st.info("Protein selection, isoform merging, overlap strategy, and PDB source are managed in the sidebar.")
+                        #st.info("Protein selection, isoform merging, overlap strategy, and PDB source are managed in the sidebar.")
+                        # --- DETECT PTMS ONLY FOR SELECTED PROTEIN ---
+                        if st.session_state.combine_isoforms == "yes":
+                            iso_pattern = re.escape(selected_protein) + r'(?:-\d+)?$'
+                            isoforms = df[df['Protein.Group'].str.contains(iso_pattern, regex=True)]['Protein.Group'].unique()
+                            pre_selected_df = df[df['Protein.Group'].isin(isoforms)]
+                        else:
+                            pre_selected_df = df[df['Protein.Group'] == selected_protein]
+                            
+                        ptm_col_candidates = [c for c in ['Modified.Sequence', 'PTM'] if c in pre_selected_df.columns]
+                        if ptm_col_candidates:
+                            col_series = pre_selected_df[ptm_col_candidates[0]].dropna().astype(str)
+                            all_text = ' '.join(col_series.tolist())
+                            st.session_state.all_unimods = sorted(set(re.findall(r'UniMod:\d+', all_text)))
+                        else:
+                            st.session_state.all_unimods = []
                         combine_isoforms = st.session_state.combine_isoforms
                         overlap_strategy = st.session_state.overlap_strategy
                         
@@ -2882,7 +2898,6 @@ with main_tab[1]:
 
                         df                  = st.session_state.df
                         selected_conditions = st.session_state.selected_conditions
-                        
                         selected_protein    = st.session_state.selected_protein
                         combine_isoforms    = st.session_state.combine_isoforms
                         overlap_strategy    = st.session_state.overlap_strategy
@@ -2971,7 +2986,6 @@ with main_tab[1]:
                             #st.error("No isoforms selected.")
                             #st.stop()
                         
-                        
                         st.session_state.selected_df = selected_df
                         conditions = selected_conditions
                         peptide_data = {}
@@ -2980,9 +2994,6 @@ with main_tab[1]:
                         min_max_logs = {}
                         z_score_mapping = {}  # ← Store z-scores for single peptide view
                         ptm_col = 'Modified.Sequence' if st.session_state.ptm_enabled and has_ptm else None
-                        
-                       
-                            
                         #displayed_ptms = [um for cond in ptm_data.values() for um in cond.keys() if cond[um]['selected']]
                         #if not displayed_ptms:
                             #st.warning("No PTMs will be displayed: either none selected or none detected in this protein.")
@@ -4340,14 +4351,14 @@ with quant_diff_tab:
                         st.session_state.diff_has_ptm      = bool(ptm_detected)
                         st.session_state.diff_fc_columns   = fc_columns
                         st.session_state.diff_pval_columns = pval_columns
-                        st.session_state.diff_all_unimods       = unimods if ptm_detected else []
+                        #st.session_state.diff_all_unimods       = unimods if ptm_detected else []
                         # Also populate the global UniMod list so the sidebar PTM annotation UI
                         # becomes available while working in the differential tab.
-                        if ptm_detected:
+                        #if ptm_detected:
                             # Only set global list if it's currently empty to avoid overwriting
                             # user selections in other workflows.
-                            if not st.session_state.get("all_unimods"):
-                                st.session_state.all_unimods = unimods
+                            #if not st.session_state.get("all_unimods"):
+                                #st.session_state.all_unimods = unimods
                         
                         # ✅ FIX: only initialize selected_unimods if it hasn't been set yet
                         # Never overwrite it on re-confirmation — user's selections must survive
@@ -4557,7 +4568,20 @@ with quant_diff_tab:
                 protein_options = sorted(df['Protein.Group'].unique())
                 # Present local protein selector here (under the differential workflow UI)
                 selected_protein = st.selectbox("Select Protein", protein_options, key="diff_protein_select")
-                # Keep mapping rules & PTM toggles in the sidebar (global state)
+                if st.session_state.combine_isoforms == "yes":
+                    iso_pattern = re.escape(selected_protein) + r'(?:-\d+)?$'
+                    isoforms = df[df['Protein.Group'].str.contains(iso_pattern, regex=True)]['Protein.Group'].unique()
+                    pre_selected_df = df[df['Protein.Group'].isin(isoforms)]
+                else:
+                    pre_selected_df = df[df['Protein.Group'] == selected_protein]
+                    
+                ptm_col_candidates = [c for c in ['Modified.Sequence', 'PTM'] if c in pre_selected_df.columns]
+                if ptm_col_candidates:
+                    col_series = pre_selected_df[ptm_col_candidates[0]].dropna().astype(str)
+                    all_text = ' '.join(col_series.tolist())
+                    st.session_state.all_unimods = sorted(set(re.findall(r'UniMod:\d+', all_text)))
+                else:
+                    st.session_state.all_unimods = []
                 combine_isoforms = st.session_state.combine_isoforms
                 overlap_strategy = st.session_state.overlap_strategy
                 # PDB source selection is managed in the sidebar
@@ -5695,6 +5719,7 @@ with quant_diff_tab:
                         )
 
                         st.plotly_chart(fig, use_container_width=True)
+
         # ===============================================
         # 💾 Download & Reset Buttons
         # ===============================================
@@ -5733,3 +5758,4 @@ with quant_diff_tab:
                 st.session_state.all_unimods = []
                 st.session_state.selected_unimods = []
                 st.rerun()
+render_sidebar()
