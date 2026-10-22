@@ -206,7 +206,10 @@ def render_sidebar():
         )
         st.session_state.selected_cmap = st.session_state.cmap
         st.caption("These settings apply across most 3D and linear visualizations.")
-    
+def safe_stop():
+    """Renders the sidebar before halting the script so it doesn't disappear."""
+    render_sidebar()
+    st.safe_Stop()
 from functools import lru_cache
 from typing import Optional, Dict, Any, List
 import urllib3
@@ -2112,7 +2115,7 @@ with main_tab[0]:
         num_cols = [c for c in df.columns if df[c].dtype in ['float64', 'int64'] and c not in ['Protein.Group', 'Stripped.Sequence']]
         if not num_cols:
             st.error("No numeric intensity columns found in CSV.")
-            st.stop()
+            st.safe_stop()
 
         intensity_col = st.selectbox("Select Intensity Column (Condition Name)", num_cols, key="qual_intensity_col")
 
@@ -2120,7 +2123,7 @@ with main_tab[0]:
         st.session_state.global_protein_options = proteins
         if not proteins:
             st.error("No proteins found in the uploaded file.")
-            st.stop()
+            st.safe_Stop()
         selected_protein = st.selectbox(
             "Protein of Interest",
             proteins,
@@ -2132,7 +2135,7 @@ with main_tab[0]:
         # --- DETECT PTMS ONLY FOR SELECTED PROTEIN ---
         if not selected_protein:
             st.warning("Please select a protein to continue.")
-            st.stop()
+            st.safe_Stop()
         if st.session_state.combine_isoforms == "yes":
             iso_pattern = re.escape(selected_protein) + r'(?:-\d+)?$'
             isoforms = df[df['Protein.Group'].str.contains(iso_pattern, regex=True)]['Protein.Group'].unique()
@@ -2196,11 +2199,11 @@ with main_tab[0]:
                         pdb_str = requests.get(pdb_url, timeout=30).text
                     except:
                         st.error("Failed to download AlphaFold structure.")
-                        st.stop()
+                        st.safe_Stop()
                 else:
                     if not st.session_state.uploaded_pdb:
                         st.error("Please upload a PDB file.")
-                        st.stop()
+                        st.safe_Stop()
                     pdb_str = st.session_state.uploaded_pdb.getvalue().decode()
 
                 plddt_list, _, mean_plddt = extract_plddt_and_model(pdb_str, protein_seq)
@@ -2316,7 +2319,7 @@ with main_tab[1]:
             st.session_state.global_protein_options = proteins
             if not proteins:
                 st.error("No proteins found in the uploaded file.")
-                st.stop()
+                st.safe_Stop()
             selected_protein = st.selectbox(
                 "Protein of Interest",
                 proteins,
@@ -2327,7 +2330,7 @@ with main_tab[1]:
             # --- DETECT PTMS ONLY FOR SELECTED PROTEIN ---
             if not selected_protein:
                 st.warning("Please select a protein to continue.")
-                st.stop()
+                st.safe_Stop()
             if st.session_state.combine_isoforms == "yes":
                 iso_pattern = re.escape(selected_protein) + r'(?:-\d+)?$'
                 isoforms = df[df['Protein.Group'].str.contains(iso_pattern, regex=True)]['Protein.Group'].unique()
@@ -2345,7 +2348,7 @@ with main_tab[1]:
             intensity_col = st.selectbox("Select Intensity Column (Condition Name)", num_cols, key="quant_intensity_col")
             if not num_cols:
                 st.error("No numeric intensity columns found in CSV.")
-                st.stop()
+                st.safe_Stop()
 
             combine_isoforms = st.session_state.combine_isoforms
             overlap_strategy = st.session_state.overlap_strategy
@@ -2369,7 +2372,7 @@ with main_tab[1]:
                     )
                     if residue_vals is None:
                         st.error("map_peptides_to_residues returned None → check input data / function logic")
-                        st.stop()
+                        st.safe_Stop()
 
                     # Make sure it's a list/array with numbers
                     if not hasattr(residue_vals, '__len__') or len(residue_vals) == 0:
@@ -2401,11 +2404,11 @@ with main_tab[1]:
                             pdb_str = requests.get(pdb_url, timeout=30).text
                         except:
                             st.error("Failed to download AlphaFold structure.")
-                            st.stop()
+                            st.safe_Stop()
                     else:
                         if not st.session_state.uploaded_pdb:
                             st.error("Please upload a PDB file.")
-                            st.stop()
+                            st.safe_Stop()
                         pdb_str = st.session_state.uploaded_pdb.getvalue().decode()
 
                     plddt_list, _, mean_plddt = extract_plddt_and_model(pdb_str, protein_seq)
@@ -2606,25 +2609,25 @@ with main_tab[1]:
                         df = pd.read_csv(csv_file_q)
                     except Exception as e:
                         st.error(f"Error reading Peptide CSV: {e}")
-                        st.stop()
+                        st.safe_Stop()
 
                     try:
                         metadata = pd.read_csv(metadata_file)
                     except Exception as e:
                         st.error(f"Error reading Metadata CSV: {e}")
-                        st.stop()
+                        st.safe_Stop()
 
                     required_meta = {"File_Name", "Group", "Sample_Name"}
                     if not required_meta.issubset(set(metadata.columns)):
                         st.error(f"Metadata CSV must contain columns: {required_meta}")
-                        st.stop()
+                        st.safe_Stop()
 
                     fasta_str = fasta_file_q.getvalue().decode("utf-8")
                     fasta_handle = io.StringIO(fasta_str)
                     seq_records = list(SeqIO.parse(fasta_handle, "fasta"))if fasta_str else []
                     if not seq_records:
                         st.error("No sequences found in FASTA file.")
-                        st.stop()
+                        st.safe_Stop()
                     def extract_uniprot_id(header: str) -> str:
                         # Try to use UniProt format sp|ID|... else fallback first token
                         parts = header.split('|')
@@ -2643,7 +2646,7 @@ with main_tab[1]:
                     # Peptide CSV: proteins with/without isoform
                     if 'Protein.Group' not in df.columns:
                         st.error("Peptide CSV must contain 'Protein.Group' column.")
-                        st.stop()
+                        st.safe_Stop()
                     prot_ids = df['Protein.Group'].dropna().astype(str).unique().tolist()
                     prot_with_isoform = len(prot_ids)
                     prot_without_isoform = len(set([p.split('-')[0] for p in prot_ids]))
@@ -2651,7 +2654,7 @@ with main_tab[1]:
                     # Peptide CSV: stripped sequences
                     if 'Stripped.Sequence' not in df.columns:
                         st.error("Peptide CSV must contain 'Stripped.Sequence' column.")
-                        st.stop()
+                        st.safe_Stop()
                     num_peptides_raw = df['Stripped.Sequence'].notna().sum()
                     num_peptides_unique = df['Stripped.Sequence'].dropna().nunique()
                 
@@ -2695,7 +2698,7 @@ with main_tab[1]:
                     sample_cols = [c for c in sample_candidates if c in df_cols]
                     if len(sample_cols) == 0:
                         st.error("No sample columns found in the Peptide CSV that match Metadata['File_Name']. Check column names.")
-                        st.stop()
+                        st.safe_Stop()
 
                     # Map each sample to its Group
                     meta_map = metadata.set_index('File_Name')['Group'].to_dict()
@@ -2787,7 +2790,7 @@ with main_tab[1]:
                     intensity_cols = [g for g in groups if g in df.columns]
                     if len(intensity_cols) < 2:
                         st.error(f"At least two groups are required after aggregation. Found: {intensity_cols}")
-                        st.stop()
+                        st.safe_Stop()
                     st.session_state.df           = df          # df now has group-aggregated columns
                     st.session_state.intensity_cols = intensity_cols
                     st.session_state.has_ptm       = has_ptm
@@ -2851,12 +2854,12 @@ with main_tab[1]:
                             )
                             st.session_state.step2_done = False
                             st.session_state.step3_done = False
-                            st.stop()
+                            st.safe_Stop()
                         protein_options = sorted(df['Protein.Group'].unique())
                         st.session_state.global_protein_options = protein_options
                         if not protein_options:
                             st.error("No proteins found in the dataset.")
-                            st.stop()
+                            st.safe_Stop()
                         selected_protein = st.selectbox(
                             "Protein of Interest",
                             protein_options,
@@ -2868,7 +2871,7 @@ with main_tab[1]:
                         # --- DETECT PTMS ONLY FOR SELECTED PROTEIN ---
                         if not selected_protein:
                             st.warning("Please select a protein to continue.")
-                            st.stop()
+                            st.safe_Stop()
                         if st.session_state.combine_isoforms == "yes":
                             iso_pattern = re.escape(selected_protein) + r'(?:-\d+)?$'
                             isoforms = df[df['Protein.Group'].str.contains(iso_pattern, regex=True)]['Protein.Group'].unique()
@@ -2899,13 +2902,13 @@ with main_tab[1]:
                         # === CRITICAL SAFETY CHECKS ===
                         if not st.session_state.get("step1_done", False):
                             st.error("Please go back and complete **Step 1: Upload Files** first.")
-                            st.stop()
+                            st.safe_Stop()
 
                         seq_records = st.session_state.get("seq_records")
                         if seq_records is None or len(seq_records) == 0:
                             st.error("FASTA sequences not loaded. Please return to the **Upload Files** expander, upload your FASTA file, and make sure Step 1 completes successfully.")
                             st.info("Tip: You must upload CSV + FASTA + Metadata and let the file information summary appear before proceeding.")
-                            st.stop()
+                            st.safe_Stop()
 
                         df                  = st.session_state.df
                         selected_conditions = st.session_state.selected_conditions
@@ -2924,7 +2927,7 @@ with main_tab[1]:
                             #    f"Please go back to **Step 2** and click **'Confirm Aggregation Settings'** again."
                             #)
                             #st.session_state.step2_done = False   # force user back to Step 2
-                            #st.stop()
+                            #st.safe_Stop()
                         base_id = selected_protein.split('-')[0]
                         st.session_state.base_id = base_id 
                         protein_seq = None
@@ -2975,7 +2978,7 @@ with main_tab[1]:
                                 st.warning(f"Only one FASTA entry → using: {matched_header}")
                             else:
                                 st.error(f"Could not match protein sequence. Check FASTA headers or peptide data.")
-                                st.stop()
+                                st.safe_Stop()
                         seq_len = len(protein_seq)
                         # CRITICAL: SAVE TO SESSION STATE SO SUMMARY CAN SEE IT!
                         st.session_state.protein_seq = protein_seq
@@ -2995,7 +2998,7 @@ with main_tab[1]:
                         
                         #if not selected_groups:
                             #st.error("No isoforms selected.")
-                            #st.stop()
+                            #st.safe_Stop()
                         
                         st.session_state.selected_df = selected_df
                         conditions = selected_conditions
@@ -3020,7 +3023,7 @@ with main_tab[1]:
                                 st.error(f"Column '{intensity_col}' not found. Go back to Step 2.")
                                 st.session_state.step2_done = False
                                 st.session_state.step3_done = False
-                                st.stop()
+                                st.safe_Stop()
 
                             ptm_col_to_use = 'Modified.Sequence' if st.session_state.ptm_enabled and has_ptm else None
 
@@ -3055,7 +3058,7 @@ with main_tab[1]:
                             covered = [v for v in residues if v is not None]
                             if not covered:
                                 st.error(f"No peptides mapped for {condition}.")
-                                st.stop()
+                                st.safe_Stop()
                             min_max_logs[condition] = (min(covered), max(covered))
 
                             peptides = selected_df.groupby('Stripped.Sequence')[intensity_col].mean().reset_index()
@@ -3085,32 +3088,32 @@ with main_tab[1]:
                                             st.warning(f"PDB fetch failed for {version} (status {r.status_code}), trying next...")
                                     except requests.exceptions.RequestException as e:
                                         st.error(f"Failed to fetch PDB for {base_id}: {str(e)}.")
-                                        st.stop()
+                                        st.safe_Stop()
 
                             if pdb_str is None:
                                 st.error(f"No AlphaFold structure found for {base_id} in v6, v4, or v3. "
                                         f"Try uploading a PDB file manually.")
-                                st.stop()
+                                st.safe_Stop()
                         else:  # Upload PDB
                             if st.session_state.uploaded_pdb is None:
                                 st.error("No PDB file uploaded.")
-                                st.stop()
+                                st.safe_Stop()
                             # Validate filename
                             pdb_filename = st.session_state.uploaded_pdb.name
                             if not pdb_filename.endswith('.pdb'):
                                 st.error("Uploaded file must have a .pdb extension.")
-                                st.stop()
+                                st.safe_Stop()
 
                             filename_id = pdb_filename[:-4]  # Remove .pdb extension
                             if filename_id != base_id:
                                 st.error(f"PDB filename ({pdb_filename}) must match the selected protein's UniProt ID ({base_id}).")
-                                st.stop()
+                                st.safe_Stop()
 
                             try:
                                 pdb_str = st.session_state.uploaded_pdb.getvalue().decode("utf-8")
                             except Exception as e:
                                 st.error(f"Error reading uploaded PDB file: {e}")
-                                st.stop()
+                                st.safe_Stop()
                         
                         source_label = f"AlphaFold {fetched_version}" if st.session_state.pdb_source == "AlphaFold" else "uploaded"
                         st.success(f"Loaded {source_label} structure for {base_id} ({len(pdb_str)} bytes)")
@@ -3164,7 +3167,7 @@ with main_tab[1]:
                 elif st.session_state.base_id is None :
                     st.warning("protein data not yet processed."
                             "please complete the step-4 by clicking the 'process protein' first.")
-                    st.stop()
+                    st.safe_Stop()
                 else:
                     base_id                   = st.session_state.base_id
                     protein_seq               = st.session_state.protein_seq
@@ -3341,7 +3344,7 @@ with main_tab[1]:
 
                             if peptide_rows.empty:
                                 st.error(f"Selected peptide not found in current data.")
-                                st.stop()
+                                st.safe_Stop()
 
                             viewer_residue_data = []
                             viewer_ptm_data = []  # Clear & build fresh
@@ -3533,7 +3536,7 @@ with main_tab[1]:
 
                             if peptide_rows.empty:
                                 st.error(f"Selected peptide '{selected_peptide}' not found in data.")
-                                st.stop()
+                                st.safe_Stop()
 
                             # Build linear data for each condition
                             linear_residue_data = {}
@@ -3547,7 +3550,7 @@ with main_tab[1]:
                                 ptm_col_to_use = 'Modified.Sequence' if st.session_state.ptm_enabled and has_ptm else None
                                 if cond not in peptide_rows.columns:
                                     st.error(f"Column '{cond}' missing from peptide data. Re-run Step 2.")
-                                    st.stop()
+                                    st.safe_Stop()
                                 
                                 # ✅ FIX: Use pre-computed z-scores from full structure
                                 z_score_lookup = st.session_state.get("z_score_mapping", {}).get(cond, {})
@@ -4261,27 +4264,27 @@ with quant_diff_tab:
                     df = pd.read_csv(csv_file_q)
                 except Exception as e:
                     st.error(f"Error reading Peptide CSV: {e}")
-                    st.stop()
+                    st.safe_Stop()
                 try:   
                     metadata = pd.read_csv(metadata_file)
                 except Exception as e:
                     st.error(f"Error reading Metadata CSV: {e}")
-                    st.stop()
+                    st.safe_Stop()
                     
                 required_meta = {"File_Name", "Group", "Sample_Name"}
                 if not required_meta.issubset(set(metadata.columns)):
                     st.error(f"Metadata CSV must contain columns: {required_meta}")
-                    st.stop()
+                    st.safe_Stop()
                 if 'Protein.Group' not in df.columns or 'Stripped.Sequence' not in df.columns:
                     st.error("Peptide CSV must contain 'Protein.Group' and 'Stripped.Sequence' columns.")
-                    st.stop()
+                    st.safe_Stop()
 
                 fasta_str = fasta_file_q.getvalue().decode("utf-8")
                 fasta_handle = io.StringIO(fasta_str)
                 seq_records = list(SeqIO.parse(fasta_handle, "fasta"))
                 if not seq_records:
                     st.error("No sequences found in FASTA file.")
-                    st.stop()
+                    st.safe_Stop()
 
                 def extract_uniprot_id(header: str) -> str:
                     parts = header.split('|')
@@ -4336,7 +4339,7 @@ with quant_diff_tab:
 
                 if len(sample_cols) == 0:
                     st.error("No sample columns found matching Metadata['File_Name'].")
-                    st.stop()
+                    st.safe_Stop()
                 # Differential columns
                 fc_patterns = r'(_log2FC|_FC|_logFC|FoldChange|log2FoldChange)$'
                 pval_patterns = r'(_padj|_pvalue|_adjp|_FDR|P\.Value|adj\.P\.Val)$'
@@ -4401,7 +4404,7 @@ with quant_diff_tab:
                 sample_cols = [c for c in sample_candidates if c in df_cols]
                 if len(sample_cols) == 0:
                     st.error("No sample columns found in the Peptide CSV that match Metadata['File_Name'].")
-                    st.stop()
+                    st.safe_Stop()
 
                 # Map samples to groups
                 meta_map = metadata.set_index('File_Name')['Group'].to_dict()
@@ -4432,7 +4435,7 @@ with quant_diff_tab:
                 # Condition selection
                 if len(groups) < 2:
                     st.error(f"At least two groups required. Found: {groups}")
-                    st.stop()
+                    st.safe_Stop()
 
                 #available_diff_cols = sorted(set(fc_columns + pval_columns))
 
@@ -4444,7 +4447,7 @@ with quant_diff_tab:
                     • Fold Change:   ..._log2FC, ..._FC, ..._logFC
                     • P-value:       ..._padj, ..._pvalue, ..._adjp
                     Please uppload a file with pre-computed differential results.""")
-                    st.stop()
+                    st.safe_Stop()
 
                 st.markdown("### Detected Differential Columns")
                 if fc_columns:
@@ -4462,7 +4465,7 @@ with quant_diff_tab:
 
                 #if not selected_columns:
                     #st.warning("Please select at least one differential column to proceed.")
-                    #st.stop()
+                    #st.safe_Stop()
 
                 #conditions = selected_columns
                 if st.button("Confirm Analysis Options", use_container_width=True, key="diff_confirm_options"):
@@ -4484,12 +4487,12 @@ with quant_diff_tab:
                     conditions = fc_columns
                     if not conditions:
                         st.error("No fold change columns detected. Cannot proceed in Fold Change mode.")
-                        st.stop()
+                        st.safe_Stop()
                 else:
                     conditions = pval_columns
                     if not conditions:
                         st.error("No p-value columns detected. Cannot proceed in P-value mode.")
-                        st.stop()
+                        st.safe_Stop()
 
                 st.info(f"Will visualize **{len(conditions)}** {visualize_by.lower()} comparisons:")
                 st.write(", ".join(conditions))
@@ -4581,7 +4584,7 @@ with quant_diff_tab:
                 selected_protein = st.selectbox("Select Protein", protein_options, key="diff_protein_select")
                 if not selected_protein:
                     st.warning("Please select a protein to continue.")
-                    st.stop()
+                    st.safe_Stop()
                 if st.session_state.combine_isoforms == "yes":
                     iso_pattern = re.escape(selected_protein) + r'(?:-\d+)?$'
                     isoforms = df[df['Protein.Group'].str.contains(iso_pattern, regex=True)]['Protein.Group'].unique()
@@ -4633,11 +4636,11 @@ with quant_diff_tab:
             else:
                 if st.session_state.get("diff_seq_records") is None:
                     st.error("FASTA sequences not loaded. Please go back to Step 1.")
-                    st.stop()
+                    st.safe_Stop()
 
                 if "diff_selected_protein" not in st.session_state or not st.session_state.diff_selected_protein:
                     st.error("No protein selected. Please go back to Step 3.")
-                    st.stop()
+                    st.safe_Stop()
                 # Pull all saved state
                 df               = st.session_state.diff_df
                 seq_records      = st.session_state.diff_seq_records
@@ -4676,7 +4679,7 @@ with quant_diff_tab:
                 
                 if not selected_groups:
                     st.error("No isoforms selected.")
-                    st.stop()
+                    st.safe_Stop()
                 
                 selected_df = df[df['Protein.Group'].isin(selected_groups)] 
                 if protein_seq is None:
@@ -4704,7 +4707,7 @@ with quant_diff_tab:
                         st.warning(f"Only one FASTA entry → using: {matched_header}")
                     else:
                         st.error(f"Could not match protein sequence. Check FASTA headers or peptide data.")
-                        st.stop()
+                        st.safe_Stop()
 
                 seq_len = len(protein_seq)
                 # CRITICAL: SAVE TO SESSION STATE SO SUMMARY CAN SEE IT!
@@ -4756,7 +4759,7 @@ with quant_diff_tab:
                     covered = [v for v in residues if v is not None]
                     if not covered:
                         st.error(f"No peptides mapped for {condition}.")
-                        st.stop()
+                        st.safe_Stop()
                     min_max_logs[condition] = (min(covered), max(covered))
                     peptides = selected_df.groupby('Stripped.Sequence')[intensity_col].mean().reset_index()
                     peptide_data[condition] = peptides
@@ -4777,31 +4780,31 @@ with quant_diff_tab:
                                 pdb_str = r.text
                             elif r.status_code == 404:
                                 st.error("Model_v6 not found. The protein may not have a v6 structure yet.")
-                                st.stop()
+                                st.safe_Stop()
                             else:
                                 st.error(f"PDB fetch failed (status {r.status_code}).")
-                                st.stop()
+                                st.safe_Stop()
                         except requests.exceptions.RequestException as e:
                             st.error(f"Failed to fetch PDB for {base_id}: {str(e)}.")
-                            st.stop()
+                            st.safe_Stop()
                 else:  # Upload PDB
                     if st.session_state.uploaded_pdb is None:
                         st.error("No PDB file uploaded.")
-                        st.stop()
+                        st.safe_Stop()
                     # Validate filename
                     pdb_filename = st.session_state.uploaded_pdb.name
                     if not pdb_filename.endswith('.pdb'):
                         st.error("Uploaded file must have a .pdb extension.")
-                        st.stop()
+                        st.safe_Stop()
                     filename_id = pdb_filename[:-4]  # Remove .pdb extension
                     if filename_id != base_id:
                         st.error(f"PDB filename ({pdb_filename}) must match the selected protein's UniProt ID ({base_id}).")
-                        st.stop()
+                        st.safe_Stop()
                     try:
                         pdb_str = st.session_state.uploaded_pdb.getvalue().decode("utf-8")
                     except Exception as e:
                         st.error(f"Error reading uploaded PDB file: {e}")
-                        st.stop()
+                        st.safe_Stop()
                 
                 st.success(f"Loaded {'AlphaFold' if st.session_state.pdb_source == 'AlphaFold' else 'uploaded'} structure for {base_id} ({len(pdb_str)} bytes)")
                 plddt_list, model_name, mean_plddt = extract_plddt_and_model(pdb_str, protein_seq)
@@ -5025,7 +5028,7 @@ with quant_diff_tab:
 
                     #if peptide_rows.empty:
                         #st.error(f"Selected peptide not found in current data.")
-                        #st.stop()
+                        #st.safe_Stop()
                     target_clean = str(target_peptide).strip()
 
                     if 'Stripped.Sequence_clean' not in selected_df.columns:
@@ -5040,7 +5043,7 @@ with quant_diff_tab:
                         peptide_rows = selected_df[selected_df[clean_col].str.contains(target_clean, na=False)]
                         if peptide_rows.empty:
                             st.error(f"No data found for peptide: **{target_peptide}**. Check the selected peptide or the dataset.")
-                            st.stop()
+                            st.safe_Stop()
                         st.warning(f"Using partial match for peptide: **{target_peptide}** ({len(peptide_rows)} rows found)")
 
                     viewer_residue_data = []
@@ -5210,7 +5213,7 @@ with quant_diff_tab:
 
                     if peptide_rows.empty:
                         st.error(f"Selected peptide '{selected_peptide}' not found in data.")
-                        st.stop()
+                        st.safe_Stop()
 
                     # Build linear data for each condition
                     linear_residue_data = {}
@@ -5338,7 +5341,7 @@ with quant_diff_tab:
                     )
                     if "diff_fc_columns" not in st.session_state or "diff_pval_columns" not in st.session_state:
                         st.error("Differential columns not found. Please go back to Step 1 and re-confirm files.")
-                        st.stop()
+                        st.safe_Stop()
 
                     fc_columns = st.session_state.diff_fc_columns
                     pval_columns = st.session_state.diff_pval_columns
@@ -5350,10 +5353,10 @@ with quant_diff_tab:
 
                     if selected_df is None or (isinstance(selected_df, pd.DataFrame) and selected_df.empty):
                         st.error("No processed data available. Please complete the protein processing step first.")
-                        st.stop()
+                        st.safe_Stop()
                     if selected_df is None:
                         st.error("No processed data available. Please complete the protein processing step first.")
-                        st.stop()
+                        st.safe_Stop()
                         
                     # ─── 1. Find all FC and p-value columns ────────────────────────────────
                     fc_cols = [c for c in fc_columns if c in selected_df.columns]
@@ -5523,7 +5526,7 @@ with quant_diff_tab:
 
                         if not comparison_map:
                             st.warning("No fold-change columns found for the position plot.")
-                            st.stop()
+                            st.safe_Stop()
 
                         # ── Show user what was auto-detected (helpful for debugging) ───────────────
                         for base, cfg in comparison_map.items():
@@ -5608,7 +5611,7 @@ with quant_diff_tab:
                                 f"Checked {len(comparison_map)} group(s): {list(comparison_map.keys())}. "
                                 "Verify that 'Stripped.Sequence' values match the protein sequence."
                             )
-                            st.stop()
+                            st.safe_Stop()
 
                         # ── Everything below here is unchanged — plot_df and fig construction ──────
                         plot_df = pd.DataFrame(plot_rows)
