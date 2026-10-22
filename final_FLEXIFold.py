@@ -2129,7 +2129,7 @@ with main_tab[0]:
             proteins,
             index=proteins.index(st.session_state.selected_protein_global)
                 if st.session_state.selected_protein_global in proteins else 0,
-            key="selected_protein_global"
+            key="selected_protein_qual"
         )
 
         # --- DETECT PTMS ONLY FOR SELECTED PROTEIN ---
@@ -2325,7 +2325,7 @@ with main_tab[1]:
                 proteins,
                 index=proteins.index(st.session_state.selected_protein_global)
                     if st.session_state.selected_protein_global in proteins else 0,
-                key="selected_protein_global"
+                key="selected_protein_quant_single"
             )
             # --- DETECT PTMS ONLY FOR SELECTED PROTEIN ---
             if not selected_protein:
@@ -2865,7 +2865,7 @@ with main_tab[1]:
                             protein_options,
                             index=protein_options.index(st.session_state.selected_protein_global)
                                 if st.session_state.selected_protein_global in protein_options else 0,
-                            key="selected_protein_global"
+                            key="selected_protein_quant_multi"
                         )
                         #st.info("Protein selection, isoform merging, overlap strategy, and PDB source are managed in the sidebar.")
                         # --- DETECT PTMS ONLY FOR SELECTED PROTEIN ---
