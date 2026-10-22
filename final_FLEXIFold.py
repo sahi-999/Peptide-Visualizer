@@ -60,6 +60,8 @@ DEFAULT_APP_STATE = {
     "selected_residue": None,
     "all_unimods": [],
     "selected_unimods": [],
+    "engine": "NGL (synced)",
+    "backbone_style": "ribbon",
 }
 for key, value in DEFAULT_APP_STATE.items():
     st.session_state.setdefault(key, value)
