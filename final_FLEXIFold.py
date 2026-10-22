@@ -54,7 +54,7 @@ DEFAULT_APP_STATE = {
     "uploaded_pdb": None,
     "ptm_configs": {},
     "cmap": "autumn",
-    "bg_color": "black",
+    "st.session_state.bg_color": "black",
     "conditions_confirmed": {'single': False, 'multiple': False},
     "processed": {'single': False, 'multiple': False},
     "selected_residue": None,
@@ -184,8 +184,8 @@ def render_sidebar():
             
         if "cmap" not in st.session_state:
             st.session_state.cmap = "autumn"
-        if "bg_color" not in st.session_state:
-            st.session_state.bg_color = "black"
+        if "st.session_state.bg_color" not in st.session_state:
+            st.session_state.st.session_state.bg_color = "black"
         if "not_mapped_color" not in st.session_state:
             st.session_state.not_mapped_color = "#d3d3d3"
 
@@ -195,16 +195,16 @@ def render_sidebar():
             cmap_options,
             index=cmap_options.index(st.session_state.cmap) if st.session_state.cmap in cmap_options else 0,
         )
-        st.session_state.bg_color = st.selectbox(
+        st.session_state.st.session_state.bg_color = st.selectbox(
             "3D Background",
             ["black", "white"],
-            index=0 if st.session_state.bg_color == "black" else 1,
+            index=0 if st.session_state.st.session_state.bg_color == "black" else 1,
         )
         st.session_state.not_mapped_color = st.color_picker(
             "Not Mapped Color",
             value=st.session_state.not_mapped_color,
         )
-        st.session_state.selected_cmap = st.session_state.cmap
+        st.session_state.st.session_state.cmap = st.session_state.cmap
         st.caption("These settings apply across most 3D and linear visualizations.")
 def safe_stop():
     """Renders the sidebar before halting the script so it doesn't disappear."""
@@ -1128,10 +1128,10 @@ def render_linear_plot(residue_vals, title, seq_len, vmin, vmax, protein_seq, mo
     document.head.appendChild(style);
     </script>
     """
-    st.components.v1.html(title_html + legend_html + container_html + js, height=container_height+20)
+    st.html(title_html + legend_html + container_html + js, height=container_height+20)
     return None, None
 
-def render_synced_viewers(pdb_str, residue_vals_list, bg_color, title_list, cmap_name='autumn', not_mapped_color='#d3d3d3', ptm_data_list=None):
+def render_synced_viewers(pdb_str, residue_vals_list, st.session_state.bg_color, title_list, cmap_name='autumn', not_mapped_color='#d3d3d3', ptm_data_list=None):
     num_conditions = len(residue_vals_list)
     if num_conditions < 2 or num_conditions > 4:
         st.error(f"Unsupported number of conditions: {num_conditions}. Must be 2-4.")
@@ -1174,14 +1174,14 @@ def render_synced_viewers(pdb_str, residue_vals_list, bg_color, title_list, cmap
         col = idx % grid[1]
         view.addModel(pdb_str, 'pdb', viewer=(row, col))
 
-    bg_color_map = {'white': '#FFFFFF', 'black': '#000000', 'darkgrey': '#4A4A4A'}
-    bg_color_hex = bg_color_map.get(bg_color.lower(), '#000000')
+    st.session_state.bg_color_map = {'white': '#FFFFFF', 'black': '#000000', 'darkgrey': '#4A4A4A'}
+    st.session_state.bg_color_hex = st.session_state.bg_color_map.get(st.session_state.bg_color.lower(), '#000000')
 
     # Set background and initial style for each viewer
     for idx in range(num_conditions):
         row = idx // grid[1]
         col = idx % grid[1]
-        view.setBackgroundColor(bg_color_hex, viewer=(row, col))
+        view.setBackgroundColor(st.session_state.bg_color_hex, viewer=(row, col))
         view.setStyle({}, {'cartoon': {'color': 'lightgray'}}, viewer=(row, col))
 
     # Apply colors
@@ -1428,8 +1428,8 @@ def render_synced_viewers(pdb_str, residue_vals_list, bg_color, title_list, cmap
     html = view._make_html()
     titles_str = " | ".join(title_list)
     st.markdown(f"#### {titles_str}")
-    st.components.v1.html(html + hover_js, height=420)
-    st.components.v1.html(listener_js, height=0)
+    st.html(html + hover_js, height=420)
+    st.html(listener_js, height=0)
 
 def create_download_zip(
     protein_of_interest: str,
@@ -1684,7 +1684,7 @@ def render_single_3d_viewer(
     cmap_name_q='autumn',
     not_mapped_color='#d3d3d3',
     ptm_data=None,
-    bg_color='black'
+    st.session_state.bg_color='black'
 ):
     """
     Single 3D viewer with:
@@ -1775,7 +1775,7 @@ def render_single_3d_viewer(
                         }, {"position": {"x": x, "y": y, "z": z}})
 
     # === 5. Final style & zoom ===
-    bg_hex = "#000000" if "black" in bg_color.lower() else "#FFFFFF"
+    bg_hex = "#000000" if "black" in st.session_state.bg_color.lower() else "#FFFFFF"
     view.setBackgroundColor(bg_hex)
     view.zoomTo()
     view.zoom(1.4)
@@ -1811,12 +1811,12 @@ def render_single_3d_viewer(
     # === 7. Render ===
     st.markdown(f"#### {title}")
     html_content = view._make_html() + click_js
-    st.components.v1.html(html_content, height=650)
+    st.html(html_content, height=650)
 
     # Listener (same for all single viewers — only one needed per page)
     if not hasattr(st.session_state, "single_viewer_listener_added"):
         st.session_state.single_viewer_listener_added = True
-        st.components.v1.html("""
+        st.html("""
         <script>
         let previous_selected = null;
         window.addEventListener("message", (event) => {
@@ -2245,7 +2245,7 @@ with main_tab[0]:
                         st.session_state.cmap,
                         st.session_state.not_mapped_color,
                         final_ptm,
-                        bg_color=st.session_state.bg_color
+                        st.session_state.bg_color=st.session_state.st.session_state.bg_color
                     )
 
                 # === Linear Plot — Beautiful Z-score Style ===
@@ -2463,7 +2463,7 @@ with main_tab[1]:
                         st.session_state.cmap,
                         st.session_state.not_mapped_color,
                         final_ptm,
-                        bg_color=st.session_state.bg_color
+                        st.session_state.bg_color=st.session_state.st.session_state.bg_color
                     )
 
                 # === Linear Plot —  Z-score Style ===
@@ -2534,7 +2534,7 @@ with main_tab[1]:
                         <img src="data:image/png;base64,{img_str}" style="width: 100%; max-width: 520px; height: auto; border: 1px solid #e0e0e0; border-radius: 6px;">
                     </div>
                     """
-                    st.components.v1.html(html_content, height=90, scrolling=False)
+                    st.html(html_content, height=90, scrolling=False)
           
     # ----- MULTIPLE CONDITIONS (Quantitative) – ONLY HERE we show uploads -----
     with quant_multi_tab:
@@ -2573,8 +2573,8 @@ with main_tab[1]:
                 "residue_data":    {},
                 "ptm_data":        {},
                 "pdb_str":         None,
-                "bg_color":        "black",
-                "selected_cmap":   "autumn",
+                "st.session_state.bg_color":        "black",
+                "st.session_state.cmap":   "autumn",
                 "not_mapped_color": "#d3d3d3",
                 "min_max_logs":    {},
                 "conditions":      [],
@@ -3067,7 +3067,7 @@ with main_tab[1]:
                         st.markdown(f"**FASTA header:** {matched_header}")
                         seq_html = format_sequence_for_display(protein_seq, residue_data, conditions, line_len=150, group=20)
                         copy_html = sequence_copy_component(protein_seq)
-                        st.components.v1.html(copy_html + seq_html, height=320)
+                        st.html(copy_html + seq_html, height=320)
                     
                         pdb_str = None
                         fetched_version = None
@@ -3175,9 +3175,9 @@ with main_tab[1]:
                     residue_data              = st.session_state.residue_data
                     ptm_data                  = st.session_state.ptm_data
                     pdb_str                   = st.session_state.pdb_str
-                    bg_color                  = st.session_state.bg_color
-                    selected_cmap             = st.session_state.selected_cmap
-                    selected_not_mapped_color = st.session_state.not_mapped_color
+                    st.session_state.bg_color                  = st.session_state.st.session_state.bg_color
+                    st.session_state.cmap             = st.session_state.st.session_state.cmap
+                    st.session_state.not_mapped_color = st.session_state.not_mapped_color
                     min_max_logs              = st.session_state.min_max_logs
                     conditions                = st.session_state.conditions
                     selected_df               = st.session_state.selected_df
@@ -3494,12 +3494,12 @@ with main_tab[1]:
                                 pdb_str=pdb_str, protein_seq=protein_seq, conditions=conditions,
                                 residue_data=dict(zip(conditions, viewer_residue_data)),
                                 ptm_data=dict(zip(conditions, viewer_ptm_data)),
-                                vmin=vmn, vmax=vmx, cmap_name=selected_cmap, not_mapped_color=selected_not_mapped_color,
+                                vmin=vmn, vmax=vmx, cmap_name=st.session_state.cmap, not_mapped_color=st.session_state.not_mapped_color,
                                 backbone_style=st.session_state.backbone_style, key_suffix="_quantmulti",
                                 value_label="Frequency-Z" if st.session_state.is_frequency else "Z-Score",
                             )
                         else:
-                            render_synced_viewers(pdb_str, viewer_residue_data, bg_color, conditions, selected_cmap, selected_not_mapped_color, viewer_ptm_data)
+                            render_synced_viewers(pdb_str, viewer_residue_data, st.session_state.bg_color, conditions, st.session_state.cmap, st.session_state.not_mapped_color, viewer_ptm_data)
                         st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
                         
                         # Calculate coverage for each condition
@@ -3618,8 +3618,8 @@ with main_tab[1]:
                                 model_name,
                                 plddt_list,
                                 mean_plddt,
-                                cmap_name=selected_cmap,
-                                not_mapped_color=selected_not_mapped_color,
+                                cmap_name=st.session_state.cmap,
+                                not_mapped_color=st.session_state.not_mapped_color,
                                 ptm_data=linear_ptm_data[cond],
                                 show_full_header=is_first,
                                 show_ptm_legend=is_first
@@ -3633,7 +3633,7 @@ with main_tab[1]:
                         overall_vmax = max(min_max_logs[cond][1] for cond in conditions)
                         cbar_fig, cbar_ax = plt.subplots(figsize=(8, 0.4))
                         norm = Normalize(vmin=overall_vmin, vmax=overall_vmax)
-                        sm = ScalarMappable(cmap=colormaps[selected_cmap], norm=norm)
+                        sm = ScalarMappable(cmap=colormaps[st.session_state.cmap], norm=norm)
                         cbar = cbar_fig.colorbar(sm, cax=cbar_ax, orientation='horizontal')
                         if st.session_state.is_frequency:
                             cbar.set_label('Frequency- Z-score', fontsize=10)
@@ -3654,7 +3654,7 @@ with main_tab[1]:
                             <img src="data:image/png;base64,{img_str}" style="width: 100%; max-width: 500px; height: auto; border: 1px solid #ddd; border-radius: 4px;">
                         </div>
                         """
-                        st.components.v1.html(html_content, height=80)
+                        st.html(html_content, height=80)
 
                         st.divider()
                         st.session_state.step5_done = True
@@ -4159,9 +4159,9 @@ with quant_diff_tab:
             "diff_model_name": None,
             "diff_mean_plddt": None,
             "diff_conditions": [],
-            "diff_bg_color": "black",
+            "diff_st.session_state.bg_color": "black",
             "diff_cmap": "autumn",
-            "diff_selected_cmap" : "autumn",
+            "diff_st.session_state.cmap" : "autumn",
             "diff_not_mapped_color": "#d3d3d3",
             "diff_visualize_by": "Fold Change",
             "diff_gene_name": None,
@@ -4768,7 +4768,7 @@ with quant_diff_tab:
                 st.markdown(f"**FASTA header:** {matched_header}")
                 seq_html = format_sequence_for_display(protein_seq, residue_data, conditions, line_len=150, group=20)
                 copy_html = sequence_copy_component(protein_seq)
-                st.components.v1.html(copy_html + seq_html, height=320)
+                st.html(copy_html + seq_html, height=320)
                 
                 # PDB fetching or upload (same as multi)
                 if st.session_state.pdb_source == "AlphaFold":
@@ -5171,12 +5171,12 @@ with quant_diff_tab:
                         residue_data=dict(zip(conditions, viewer_residue_data)),
                         ptm_data=dict(zip(conditions, viewer_ptm_data)),
                         vmin=overall_vmin, vmax=overall_vmax,
-                        cmap_name=st.session_state.diff_selected_cmap,
+                        cmap_name=st.session_state.diff_st.session_state.cmap,
                         not_mapped_color=st.session_state.diff_not_mapped_color,
                         backbone_style=st.session_state.backbone_style, key_suffix="_diff", value_label=label,
                     )
                 else:
-                    render_synced_viewers(pdb_str, viewer_residue_data, st.session_state.diff_bg_color, conditions, st.session_state.diff_selected_cmap, st.session_state.diff_not_mapped_color, viewer_ptm_data)
+                    render_synced_viewers(pdb_str, viewer_residue_data, st.session_state.diff_st.session_state.bg_color, conditions, st.session_state.diff_st.session_state.cmap, st.session_state.diff_not_mapped_color, viewer_ptm_data)
                 
                 st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
                 # Calculate coverage for each condition
@@ -5297,8 +5297,8 @@ with quant_diff_tab:
                         model_name,
                         plddt_list,
                         mean_plddt,
-                        cmap_name=selected_cmap,
-                        not_mapped_color=selected_not_mapped_color,
+                        cmap_name=st.session_state.cmap,
+                        not_mapped_color=st.session_state.not_mapped_color,
                         ptm_data=linear_ptm_data[cond],
                         show_full_header=is_first,
                         show_ptm_legend=is_first
@@ -5311,7 +5311,7 @@ with quant_diff_tab:
                 overall_vmax = max(min_max_logs[cond][1] for cond in conditions)
                 cbar_fig, cbar_ax = plt.subplots(figsize =(8,0.3), constrained_layout =True)
                 norm = Normalize(vmin=overall_vmin, vmax=overall_vmax)
-                sm = ScalarMappable(cmap=colormaps[selected_cmap], norm=norm)
+                sm = ScalarMappable(cmap=colormaps[st.session_state.cmap], norm=norm)
                 cbar = cbar_fig.colorbar(sm, cax=cbar_ax, orientation='horizontal')
                 if visualize_by == "Fold Change":
                     cbar.set_label('Log2 Fold Change', fontsize=10)
@@ -5329,7 +5329,7 @@ with quant_diff_tab:
                     <img src="data:image/png;base64,{img_str}" style="width: 100%; max-width: 500px; height: auto; border: 1px solid #ddd; border-radius: 4px;">
                 </div>
                 """
-                st.components.v1.html(html_content, height=80) 
+                st.html(html_content, height=80) 
         with st.expander("📈 Peptide Analysis Plots", expanded=True):            
                     # ─── Interactive Scatter Plot for selected protein ────────────────────────
                     st.subheader("Peptide Scatter Plot – Differential Comparison")
@@ -5747,7 +5747,7 @@ with quant_diff_tab:
             if st.button("Prepare Download (ZIP)", use_container_width=True):
                 zip_buffer = create_download_zip(
                     selected_protein, pdb_str, peptide_data, residue_data, conditions, min_max_logs, seq_len,
-                    selected_cmap, selected_not_mapped_color,
+                    st.session_state.cmap, st.session_state.not_mapped_color,
                     ptm_data if st.session_state.ptm_enabled else None,
                     selected_df if st.session_state.ptm_enabled else None,
                     protein_seq if st.session_state.ptm_enabled else None,
