@@ -1131,7 +1131,7 @@ def render_linear_plot(residue_vals, title, seq_len, vmin, vmax, protein_seq, mo
     st.html(title_html + legend_html + container_html + js, height=container_height+20)
     return None, None
 
-def render_synced_viewers(pdb_str, residue_vals_list, st.session_state.bg_color, title_list, cmap_name='autumn', not_mapped_color='#d3d3d3', ptm_data_list=None):
+def render_synced_viewers(pdb_str, residue_vals_list,bg_color, title_list, cmap_name='autumn', not_mapped_color='#d3d3d3', ptm_data_list=None):
     num_conditions = len(residue_vals_list)
     if num_conditions < 2 or num_conditions > 4:
         st.error(f"Unsupported number of conditions: {num_conditions}. Must be 2-4.")
