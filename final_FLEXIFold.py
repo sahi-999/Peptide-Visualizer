@@ -1128,7 +1128,7 @@ def render_linear_plot(residue_vals, title, seq_len, vmin, vmax, protein_seq, mo
     document.head.appendChild(style);
     </script>
     """
-    st.html(title_html + legend_html + container_html + js, height=container_height+20)
+    st.components.v1.html(title_html + legend_html + container_html + js, height=container_height+20)
     return None, None
 
 def render_synced_viewers(pdb_str, residue_vals_list,bg_color, title_list, cmap_name='autumn', not_mapped_color='#d3d3d3', ptm_data_list=None):
@@ -1428,8 +1428,8 @@ def render_synced_viewers(pdb_str, residue_vals_list,bg_color, title_list, cmap_
     html = view._make_html()
     titles_str = " | ".join(title_list)
     st.markdown(f"#### {titles_str}")
-    st.html(html + hover_js, height=420)
-    st.html(listener_js, height=0)
+    st.components.v1.html(html + hover_js, height=420)
+    st.components.v1.html(listener_js, height=0)
 
 def create_download_zip(
     protein_of_interest: str,
@@ -1811,12 +1811,12 @@ def render_single_3d_viewer(
     # === 7. Render ===
     st.markdown(f"#### {title}")
     html_content = view._make_html() + click_js
-    st.html(html_content, height=650)
+    st.components.v1.html(html_content, height=650)
 
     # Listener (same for all single viewers — only one needed per page)
     if not hasattr(st.session_state, "single_viewer_listener_added"):
         st.session_state.single_viewer_listener_added = True
-        st.html("""
+        st.components.v1.html("""
         <script>
         let previous_selected = null;
         window.addEventListener("message", (event) => {
@@ -2534,7 +2534,7 @@ with main_tab[1]:
                         <img src="data:image/png;base64,{img_str}" style="width: 100%; max-width: 520px; height: auto; border: 1px solid #e0e0e0; border-radius: 6px;">
                     </div>
                     """
-                    st.html(html_content, height=90, scrolling=False)
+                    st.components.v1.html(html_content, height=90, scrolling=False)
           
     # ----- MULTIPLE CONDITIONS (Quantitative) – ONLY HERE we show uploads -----
     with quant_multi_tab:
@@ -3067,7 +3067,7 @@ with main_tab[1]:
                         st.markdown(f"**FASTA header:** {matched_header}")
                         seq_html = format_sequence_for_display(protein_seq, residue_data, conditions, line_len=150, group=20)
                         copy_html = sequence_copy_component(protein_seq)
-                        st.html(copy_html + seq_html, height=320)
+                        st.components.v1.html(copy_html + seq_html, height=320)
                     
                         pdb_str = None
                         fetched_version = None
@@ -3654,7 +3654,7 @@ with main_tab[1]:
                             <img src="data:image/png;base64,{img_str}" style="width: 100%; max-width: 500px; height: auto; border: 1px solid #ddd; border-radius: 4px;">
                         </div>
                         """
-                        st.html(html_content, height=80)
+                        st.components.v1.html(html_content, height=80)
 
                         st.divider()
                         st.session_state.step5_done = True
@@ -4768,7 +4768,7 @@ with quant_diff_tab:
                 st.markdown(f"**FASTA header:** {matched_header}")
                 seq_html = format_sequence_for_display(protein_seq, residue_data, conditions, line_len=150, group=20)
                 copy_html = sequence_copy_component(protein_seq)
-                st.html(copy_html + seq_html, height=320)
+                st.components.v1.html(copy_html + seq_html, height=320)
                 
                 # PDB fetching or upload (same as multi)
                 if st.session_state.pdb_source == "AlphaFold":
@@ -5329,7 +5329,7 @@ with quant_diff_tab:
                     <img src="data:image/png;base64,{img_str}" style="width: 100%; max-width: 500px; height: auto; border: 1px solid #ddd; border-radius: 4px;">
                 </div>
                 """
-                st.html(html_content, height=80) 
+                st.components.v1.html(html_content, height=80) 
         with st.expander("📈 Peptide Analysis Plots", expanded=True):            
                     # ─── Interactive Scatter Plot for selected protein ────────────────────────
                     st.subheader("Peptide Scatter Plot – Differential Comparison")
