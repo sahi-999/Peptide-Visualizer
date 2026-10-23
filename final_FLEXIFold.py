@@ -5176,7 +5176,7 @@ with quant_diff_tab:
                         backbone_style=st.session_state.backbone_style, key_suffix="_diff", value_label=label,
                     )
                 else:
-                    render_synced_viewers(pdb_str, viewer_residue_data, st.session_state.diff_bg_color, conditions, st.session_state.cmap, st.session_state.diff_not_mapped_color, viewer_ptm_data)
+                    render_synced_viewers(pdb_str, viewer_residue_data, st.session_state.bg_color, conditions, st.session_state.cmap, st.session_state.diff_not_mapped_color, viewer_ptm_data)
                 
                 st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
                 # Calculate coverage for each condition
