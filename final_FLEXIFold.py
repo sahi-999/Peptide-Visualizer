@@ -1282,10 +1282,12 @@ def render_synced_viewers(pdb_str, residue_vals_list,bg_color, title_list, cmap_
         col = idx % grid[1]
         #view.setStyle({}, {"cartoon":{"opacity":0.85}}, viewer=(row, col))
         view.zoomTo(viewer=(row, col))
-
     view.render()
-
+    
     # JS for hover and pick
+    residues_values_js_list = json.dumps(residue_vals_list)
+    title_list_js = json.dumps(title_list)
+
     hover_js = f"""
     <script>
     document.addEventListener("DOMContentLoaded", function() {{
@@ -1294,10 +1296,8 @@ def render_synced_viewers(pdb_str, residue_vals_list,bg_color, title_list, cmap_
                 let viewerElems = document.getElementsByClassName("viewer_3Dmoljs");
                 if (!viewerElems || viewerElems.length < {num_conditions}) {{
                     if (retryCount > 0) {{
-                        console.warn('Not enough viewer elements found (' + (viewerElems ? viewerElems.length : 0) + '/{num_conditions}), retrying in ' + delay + 'ms');
+                        console.warn('Not enough viewer elements found, retrying...');
                         setTimeout(() => tryInitViewers(retryCount - 1, delay), delay);
-                    }} else {{
-                        console.error('Failed to find enough viewer elements after retries');
                     }}
                     return;
                 }}
@@ -1318,15 +1318,13 @@ def render_synced_viewers(pdb_str, residue_vals_list,bg_color, title_list, cmap_
                 }}
 
                 if (viewers.length < {num_conditions} || viewers.some(v => !v)) {{
-                    if (retryCount > 0) {{
-                        setTimeout(() => tryInitViewers(retryCount - 1, delay), delay);
-                    }} else {{
-                        console.error('Viewers not resolved');
-                    }}
+                    if (retryCount > 0) setTimeout(() => tryInitViewers(retryCount - 1, delay), delay);
                     return;
                 }}
 
                 const residues_list = {json.dumps(residues_js_list)};
+                const residue_values_list = {residues_values_js_list};
+                const titles = {title_list_js};
 
                 function handlePick(viewer_idx) {{
                     return function(atom, event) {{
@@ -1338,8 +1336,66 @@ def render_synced_viewers(pdb_str, residue_vals_list,bg_color, title_list, cmap_
                     }}
                 }}
 
+                // --- NON-BLOCKING HOVER CARD ---
+                const wrapper = viewerElems[0].parentElement;
+                wrapper.style.position = 'relative';
+                
+                let hoverCard = document.getElementById('synced-hover-card');
+                if (!hoverCard) {{
+                    hoverCard = document.createElement('div');
+                    hoverCard.id = 'synced-hover-card';
+                    hoverCard.style.position = 'absolute';
+                    hoverCard.style.bottom = '10px';
+                    hoverCard.style.right = '10px';
+                    hoverCard.style.backgroundColor = '#F4F0E6';
+                    hoverCard.style.color = '#A66127';
+                    hoverCard.style.padding = '8px 12px';
+                    hoverCard.style.borderRadius = '3px';
+                    hoverCard.style.fontFamily = 'Arial, sans-serif';
+                    hoverCard.style.fontSize = '12px';
+                    hoverCard.style.textAlign = 'right';
+                    hoverCard.style.lineHeight = '1.4';
+                    hoverCard.style.pointerEvents = 'none'; // Prevents blocking structure interaction!
+                    hoverCard.style.display = 'none';
+                    hoverCard.style.zIndex = '1000';
+                    hoverCard.style.boxShadow = '0px 2px 5px rgba(0,0,0,0.2)';
+                    wrapper.appendChild(hoverCard);
+                }}
+
+                function makeHoverHandler(viewer_idx) {{
+                    return function(atom, viewer, event, container) {{
+                        if(!atom) return;
+                        hoverCard.style.display = 'block';
+                        
+                        let plddt = atom.b ? atom.b.toFixed(2) : 'N/A';
+                        let plddtLevel = '';
+                        let plddtColor = '#000';
+                        if (atom.b > 90) {{ plddtLevel = 'Very High'; plddtColor = '#0053d6'; }}
+                        else if (atom.b > 70) {{ plddtLevel = 'Confident'; plddtColor = '#65cbdf'; }}
+                        else if (atom.b > 50) {{ plddtLevel = 'Low'; plddtColor = '#ffdb13'; }}
+                        else {{ plddtLevel = 'Very Low'; plddtColor = '#ff7d45'; }}
+
+                        let z_val = residue_values_list[viewer_idx][atom.resi - 1];
+                        let z_text = (z_val !== null && z_val !== undefined) ? z_val.toFixed(2) : "Not Mapped";
+                        let cond_name = titles[viewer_idx];
+
+                        hoverCard.innerHTML = `
+                            <div style="font-size: 13px; margin-bottom: 3px; color: #b87333;"><b>${{cond_name}}</b></div>
+                            <div style="color: #a66127;">AF-{base_id}-F1 | Model 1</div>
+                            <div style="color: #a66127;"><b>${{atom.chain}} | ${{atom.resn}} ${{atom.resi}}</b></div>
+                            <div style="color: #a66127;">pLDDT: ${{plddt}} <span style="color: ${{plddtColor}};">(${{plddtLevel}})</span></div>
+                            <div style="color: #a66127; font-weight: bold; margin-top: 4px; padding-top: 4px; border-top: 1px solid #dca473;">Value: ${{z_text}}</div>
+                        `;
+                    }}
+                }}
+
+                function handleUnhover(atom, viewer, event, container) {{
+                    hoverCard.style.display = 'none';
+                }}
+
                 for (let i = 0; i < {num_conditions}; i++) {{
                     viewers[i].setClickable({{}}, true, handlePick(i));
+                    viewers[i].setHoverable({{}}, true, makeHoverHandler(i), handleUnhover);
                 }}
 
             }} catch(e) {{
@@ -1782,6 +1838,7 @@ def render_single_3d_viewer(
 
     # === 6. Enable clicking → send message to linear plot ===
     clickable_residues = json.dumps([i for i, v in enumerate(residue_vals) if v is not None])
+    residue_values_js = json.dumps(residue_vals)
 
     click_js = f"""
     <script>
@@ -1794,7 +1851,60 @@ def render_single_3d_viewer(
             }}
             const viewer = container.viewer;
             const residues = {clickable_residues};
+            const residue_values = {residue_values_js};
+            const cond_name = "{title}";
 
+            // --- 1. Create Molstar-style Non-Blocking Hover Card ---
+            container.style.position = 'relative';
+            const hoverCard = document.createElement('div');
+            hoverCard.style.position = 'absolute';
+            hoverCard.style.bottom = '10px';
+            hoverCard.style.right = '10px';
+            hoverCard.style.backgroundColor = '#F4F0E6';
+            hoverCard.style.color = '#A66127';
+            hoverCard.style.padding = '8px 12px';
+            hoverCard.style.borderRadius = '3px';
+            hoverCard.style.fontFamily = 'Arial, sans-serif';
+            hoverCard.style.fontSize = '12px';
+            hoverCard.style.textAlign = 'right';
+            hoverCard.style.lineHeight = '1.4';
+            hoverCard.style.pointerEvents = 'none'; // CRUCIAL: prevents blocking structure interaction!
+            hoverCard.style.display = 'none';
+            hoverCard.style.zIndex = '1000';
+            hoverCard.style.boxShadow = '0px 2px 5px rgba(0,0,0,0.2)';
+            container.appendChild(hoverCard);
+
+            // --- 2. Attach Hover Callback ---
+            viewer.setHoverable({{}}, true, 
+                function(atom, viewer, event, container) {{
+                    if(!atom) return;
+                    hoverCard.style.display = 'block';
+                    
+                    let plddt = atom.b ? atom.b.toFixed(2) : 'N/A';
+                    let plddtLevel = '';
+                    let plddtColor = '#000';
+                    if (atom.b > 90) {{ plddtLevel = 'Very High'; plddtColor = '#0053d6'; }}
+                    else if (atom.b > 70) {{ plddtLevel = 'Confident'; plddtColor = '#65cbdf'; }}
+                    else if (atom.b > 50) {{ plddtLevel = 'Low'; plddtColor = '#ffdb13'; }}
+                    else {{ plddtLevel = 'Very Low'; plddtColor = '#ff7d45'; }}
+
+                    let z_val = residue_values[atom.resi - 1];
+                    let z_text = (z_val !== null && z_val !== undefined) ? z_val.toFixed(2) : "Not Mapped";
+
+                    hoverCard.innerHTML = `
+                        <div style="font-size: 13px; margin-bottom: 3px; color: #b87333;"><b>${{cond_name}}</b></div>
+                        <div style="color: #a66127;">AF-{base_id}-F1 | Model 1</div>
+                        <div style="color: #a66127;"><b>${{atom.chain}} | ${{atom.resn}} ${{atom.resi}}</b></div>
+                        <div style="color: #a66127;">pLDDT: ${{plddt}} <span style="color: ${{plddtColor}};">(${{plddtLevel}})</span></div>
+                        <div style="color: #a66127; font-weight: bold; margin-top: 4px; padding-top: 4px; border-top: 1px solid #dca473;">Value: ${{z_text}}</div>
+                    `;
+                }},
+                function(atom, viewer, event, container) {{
+                    hoverCard.style.display = 'none';
+                }}
+            );
+
+            // --- 3. Click Listener ---
             viewer.setClickable({{}}, true, function(atom) {{
                 if (!atom) return;
                 const resi = parseInt(atom.resi, 10) - 1;
