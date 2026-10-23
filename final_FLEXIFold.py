@@ -60,7 +60,7 @@ DEFAULT_APP_STATE = {
     "selected_residue": None,
     "all_unimods": [],
     "selected_unimods": [],
-    "engine": "NGL (synced)",
+    "engine": "NGL (Synced)",
     "backbone_style": "ribbon",
 }
 for key, value in DEFAULT_APP_STATE.items():
