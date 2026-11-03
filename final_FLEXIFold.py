@@ -2044,53 +2044,68 @@ def find_peptide_position(protein_seq: str, peptide: str) -> str:
     end1   = start + len(pep_clean)
     return f"{start1}-{end1}"
 
-def format_sequence_for_display(seq, residue_data, conditions, line_len=80, group=20):
+def format_sequence_for_display(seq, residue_data, conditions, line_len=60, group=10):
     mapped_positions = set()
     for cond in conditions:
         mapped_positions.update(i for i, v in enumerate(residue_data[cond]) if v is not None)
+    
     mapped_js = json.dumps(list(mapped_positions))
     lines = []
     seq_len = len(seq)
-    # Render in fixed-width monospace using inline-block spans so numbering aligns exactly with residues.
-    for start in range(0, seq_len, line_len):
-        end = min(start + line_len, seq_len)
-        segment = seq[start:end]
-        # Number line: create blocks of width 'group' chars; place the group-start number at the left of each block
-        num_line = "<div style='font-family: monospace; font-size: 10px; color: #888; display: block; margin-bottom:4px;'>"
+    
+    for start_idx in range(0, seq_len, line_len):
+        segment = seq[start_idx:min(start_idx+line_len, seq_len)]
+        
+        # Row container
+        row_html = "<div style='display: flex; gap: 15px; margin-bottom: 12px; font-family: monospace;'>"
+        
         for i in range(0, len(segment), group):
-            block_start = start + i + 1
-            # width equals number of residues in this block
-            block_size = min(group, len(segment) - i)
-            # display the number at the start of the block and draw a small vertical tick under the number
-            num_line += (
-                f"<span style='display:inline-block; width:{block_size}ch; text-align:left; position:relative;'>"
-                f"<span style='position:relative; display:inline-block;'>{block_start}</span>"
-                f"<span style='position:absolute; left:0; top:100%; width:1px; height:8px; background:#888;'></span>"
-                f"</span>"
-            )
-        num_line += "</div>"
-
-        # Sequence line: each residue is a fixed-width inline-block so it lines up with the numbering above
-        seq_line = "<div style='font-family: monospace; font-size: 12px; line-height: 1.5; display:block; position:relative;'>"
-        for j, aa in enumerate(segment):
-            abs_pos = start + j + 1
-            style = "cursor:pointer;color:blue;" if abs_pos in mapped_positions else "color:gray;"
-            seq_line += f"<span class='aa' data-pos='{abs_pos}' style='display:inline-block; width:1ch; {style}'>{aa}</span>"
-        # place the end index at the right of the line so it's clearly aligned with the last residue
-        seq_line += f"<span style='position:absolute; right:6px; top:0; font-weight:bold;'>{end}</span></div>"
-
-        lines.append(num_line + seq_line)
-    seq_html = "<div id='seq-panel' style='padding:10px; background:#fafafa; border-radius:6px; border:1px solid #ddd; white-space:nowrap; overflow:auto;'>" + "".join(lines) + "</div>"
+            block = segment[i:i+group]
+            block_start_1based = start_idx + i + 1
+            
+            # Column container for each block of 10
+            block_html = "<div style='display: flex; flex-direction: column;'>"
+            
+            # Number header with a subtle underline
+            block_html += f"<div style='font-size: 11px; color: #888; padding-bottom: 3px; border-bottom: 1px solid #eee; margin-bottom: 4px;'>{block_start_1based}</div>"
+            
+            # Sequence block
+            seq_span = "<div style='font-size: 14px; letter-spacing: 2px;'>"
+            for j, aa in enumerate(block):
+                abs_pos_0based = start_idx + i + j
+                abs_pos_1based = abs_pos_0based + 1
+                
+                is_mapped = abs_pos_0based in mapped_positions
+                color = "#2b8cff" if is_mapped else "#999"
+                cursor = "pointer" if is_mapped else "default"
+                weight = "bold" if is_mapped else "normal"
+                
+                # Zero-based data-pos safely matches the 3D viewer
+                seq_span += f"<span class='aa' data-pos='{abs_pos_0based}' style='color:{color}; cursor:{cursor}; font-weight:{weight}; transition: 0.2s;' title='Pos: {abs_pos_1based}'>{aa}</span>"
+            seq_span += "</div>"
+            
+            block_html += seq_span + "</div>"
+            row_html += block_html
+            
+        row_html += "</div>"
+        lines.append(row_html)
+        
+    seq_html = "<div id='seq-panel' style='padding: 20px; background: #ffffff; border-radius: 8px; border: 1px solid #e0e0e0; overflow-x: auto; box-shadow: inset 0 1px 3px rgba(0,0,0,0.05);'>" + "".join(lines) + "</div>"
+    
     js = f"""
     <script>
     const mapped = {mapped_js};
     document.querySelectorAll('.aa').forEach(el => {{
-        const pos = parseInt(el.getAttribute('data-pos'));
-        if (mapped.includes(pos)) {{
-            el.style.cursor = 'pointer';
+        const pos0 = parseInt(el.getAttribute('data-pos'));
+        if (mapped.includes(pos0)) {{
             el.addEventListener('click', e => {{
-                window.parent.postMessage({{ type: 'SELECT_RESIDUE', residue: pos }}, '*');
-                console.log("Sequence click sent for pos:", pos);
+                window.parent.postMessage({{ type: 'SELECT_RESIDUE', residue: pos0 }}, '*');
+            }});
+            el.addEventListener('mouseover', e => {{
+                e.target.style.filter = 'brightness(1.5)';
+            }});
+            el.addEventListener('mouseout', e => {{
+                e.target.style.filter = 'none';
             }});
         }}
     }});
@@ -3175,7 +3190,7 @@ with main_tab[1]:
                             peptide_data[condition] = peptides 
                         st.subheader("Detected Sequence")
                         st.markdown(f"**FASTA header:** {matched_header}")
-                        seq_html = format_sequence_for_display(protein_seq, residue_data, conditions, line_len=150, group=20)
+                        seq_html = format_sequence_for_display(protein_seq, residue_data, conditions, line_len=60, group=10)
                         copy_html = sequence_copy_component(protein_seq)
                         st.components.v1.html(copy_html + seq_html, height=320)
                     
@@ -4876,7 +4891,7 @@ with quant_diff_tab:
                 
                 st.subheader("Detected Sequence")
                 st.markdown(f"**FASTA header:** {matched_header}")
-                seq_html = format_sequence_for_display(protein_seq, residue_data, conditions, line_len=150, group=20)
+                seq_html = format_sequence_for_display(protein_seq, residue_data, conditions, line_len=60, group=10)
                 copy_html = sequence_copy_component(protein_seq)
                 st.components.v1.html(copy_html + seq_html, height=320)
                 
