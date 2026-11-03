@@ -2044,7 +2044,7 @@ def find_peptide_position(protein_seq: str, peptide: str) -> str:
     end1   = start + len(pep_clean)
     return f"{start1}-{end1}"
 
-def format_sequence_for_display(seq, residue_data, conditions, line_len=60, group=10):
+def format_sequence_for_display(seq, residue_data, conditions, line_len=150, group=10):
     mapped_positions = set()
     for cond in conditions:
         mapped_positions.update(i for i, v in enumerate(residue_data[cond]) if v is not None)
@@ -3190,7 +3190,7 @@ with main_tab[1]:
                             peptide_data[condition] = peptides 
                         st.subheader("Detected Sequence")
                         st.markdown(f"**FASTA header:** {matched_header}")
-                        seq_html = format_sequence_for_display(protein_seq, residue_data, conditions, line_len=60, group=10)
+                        seq_html = format_sequence_for_display(protein_seq, residue_data, conditions, line_len=150, group=10)
                         copy_html = sequence_copy_component(protein_seq)
                         st.components.v1.html(copy_html + seq_html, height=320)
                     
@@ -4891,7 +4891,7 @@ with quant_diff_tab:
                 
                 st.subheader("Detected Sequence")
                 st.markdown(f"**FASTA header:** {matched_header}")
-                seq_html = format_sequence_for_display(protein_seq, residue_data, conditions, line_len=60, group=10)
+                seq_html = format_sequence_for_display(protein_seq, residue_data, conditions, line_len=150, group=10)
                 copy_html = sequence_copy_component(protein_seq)
                 st.components.v1.html(copy_html + seq_html, height=320)
                 
