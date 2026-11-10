@@ -10,7 +10,7 @@ from matplotlib.colors import Normalize
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import base64
-import matplotlib.colors as mcolors
+import matplotlib.colors as mcolorsF
 import plotly.express as px
 from matplotlib.cm import ScalarMappable
 import zipfile
@@ -2799,22 +2799,46 @@ with main_tab[1]:
                             num_modseq_raw = df[ptm_col_for_detection].notna().sum()
                             num_modseq_unique = df[ptm_col_for_detection].dropna().nunique()
 
-                    st.markdown("### 🧾 File Information Summary")
-                    st.info(
-                        f"**FASTA File**\n"
-                        f"- Total Proteins (without isoform): {fasta_without_isoform}\n"
-                        f"- Total Proteins (with isoform): {fasta_with_isoform}\n\n"
-                        f"**Metadata File**\n"
-                        f"- Samples Detected: {num_samples}\n"
-                        f"- Groups Detected: {num_groups}\n\n"
-                        f"**Peptide CSV File**\n"
-                        f"- Proteins Detected (without isoform): {prot_without_isoform}\n"
-                        f"- Proteins Detected (with isoform): {prot_with_isoform}\n"
-                        f"- Stripped Sequences: {num_peptides_raw} (Unique: {num_peptides_unique})\n"
-                        f"- PTM Detected: {'Yes' if ptm_detected else 'No'}\n"
-                        f"- PTM Types: {', '.join(unimods)}\n"
-                        f"- Modified Sequences: {num_modseq_raw} (Unique: {num_modseq_unique})"
-                    )
+                   st.markdown("### Dataset Overview")
+                
+                   # 1. FASTA File Metrics
+                   with st.container():
+                        st.markdown("<p style='color: var(--text-color); font-weight: 600; margin-bottom: 5px;'>🧬 FASTA Database</p>", unsafe_allow_html=True)
+                        f_col1, f_col2, f_col3 = st.columns(3)
+                        f_col1.metric(label="Total Sequences", value=fasta_with_isoform)
+                        f_col2.metric(label="Unique Base Proteins", value=fasta_without_isoform)
+                        f_col3.metric(label="Isoforms Detected", value=fasta_with_isoform - fasta_without_isoform)
+                    
+                    st.markdown("<br>", unsafe_allow_html=True) # Small spacing
+    
+                    # 2. Metadata File Metrics
+                    with st.container():
+                        st.markdown("<p style='color: var(--text-color); font-weight: 600; margin-bottom: 5px;'>📋 Experimental Metadata</p>", unsafe_allow_html=True)
+                        m_col1, m_col2, m_col3 = st.columns(3)
+                        m_col1.metric(label="Total Samples", value=num_samples)
+                        m_col2.metric(label="Condition Groups", value=num_groups)
+                    
+                    st.markdown("<br>", unsafe_allow_html=True)
+    
+                    # 3. Peptide CSV File Metrics
+                    with st.container():
+                        st.markdown("<p style='color: var(--text-color); font-weight: 600; margin-bottom: 5px;'>🔬 Peptide Evidence</p>", unsafe_allow_html=True)
+                        p_col1, p_col2, p_col3, p_col4 = st.columns(4)
+                        
+                        # Using 'delta' to quietly show secondary information without clutter
+                        p_col1.metric(label="Mapped Proteins", value=prot_without_isoform, delta=f"{prot_with_isoform} w/ isoforms", delta_color="off")
+                        p_col2.metric(label="Unique Peptides", value=num_peptides_unique, delta=f"{num_peptides_raw} total", delta_color="off")
+                        
+                        if ptm_detected:
+                            p_col3.metric(label="Modified Sequences", value=num_modseq_unique, delta=f"{num_modseq_raw} total", delta_color="off")
+                            p_col4.metric(label="PTM Types Found", value=len(unimods) if unimods != ["NA"] else 0)
+                            
+                            # Display the specific UniMod tags cleanly below the metrics
+                            st.caption(f"**Detected UniMod Annotations:** `{', '.join(unimods)}`")
+                        else:
+                            p_col3.metric(label="PTM Status", value="None Detected")
+                    
+                    st.divider()
                     # --------------------------------------
                     # Identify sample intensity columns using Metadata["File_Name"]
                     # --------------------------------------
