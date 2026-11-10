@@ -114,10 +114,14 @@ def render_sidebar():
             st.subheader("PTM Annotation")
             unimod_options = st.session_state.get("all_unimods", []) or []
             if unimod_options:
+                # Ensure defaults only contain valid options for the current protein
+                current_selections = st.session_state.get("selected_unimods", [])
+                valid_defaults = [um for um in current_selections if um in unimod_options]
+                
                 st.session_state.selected_unimods = st.multiselect(
                     "Select UniMod IDs to include",
                     options=unimod_options,
-                    default=st.session_state.selected_unimods,
+                    default=valid_defaults,
                     key="global_selected_unimods",
                     help="Pick the UniMod IDs you want annotated on the structure.",
                 )
