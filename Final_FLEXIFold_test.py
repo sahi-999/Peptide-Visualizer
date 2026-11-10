@@ -2158,28 +2158,24 @@ st.markdown(
         font-family: 'Inter', 'Helvetica Neue', sans-serif;
         font-size: 4.5rem;
         font-weight: 800;
-        color: #1E293B; /* Deep Slate for high contrast */
+        /* Adapts instantly to Streamlit's active Light/Dark theme */
+        color: var(--text-color); 
         letter-spacing: -1.5px;
         margin-bottom: 0;
     }
 
-    /* Adds a crisp scientific blue accent to the 'fold' part */
     .FLEXIfold-accent {
+        /* A vibrant, scientific blue that maintains high contrast on both white and black backgrounds */
         color: #0EA5E9; 
     }
 
     .FLEXIfold-subtitle {
         text-align: center; 
-        color: #64748B; /* Professional muted slate */
+        color: var(--text-color); 
+        opacity: 0.7; /* Softens the subtitle without needing a specific hex code */
         font-size: 1.25rem; 
         margin-top: 5px; 
         font-weight: 400;
-    }
-    
-    /* Dark mode support for Streamlit */
-    @media (prefers-color-scheme: dark) {
-        .FLEXIfold-title { color: #F8FAFC; }
-        .FLEXIfold-subtitle { color: #94A3B8; }
     }
     </style>
 
@@ -2194,7 +2190,6 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
-
 # ----------------------------------------------------------------------
 # Main tabs (Qualitative vs Quantitative)
 # ----------------------------------------------------------------------
