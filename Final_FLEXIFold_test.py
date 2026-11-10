@@ -32,7 +32,7 @@ import ngl_sync_viewer as ngl_sync
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-st.set_page_config(page_title="FLEXIfold", page_icon="⚛️", layout="wide")
+st.set_page_config(page_title="FLEXIfold", layout="wide")
 
 @st.cache_data(show_spinner=False)
 def _cached_fetch_unimod_data(unimod_ids: tuple):
@@ -69,7 +69,7 @@ for key, value in DEFAULT_APP_STATE.items():
 
 def render_sidebar():
     with st.sidebar:
-        st.title("⚛️ FLEXIfold")
+        st.title("FLEXIfold")
         st.caption("Proteomics to 3D Structure Mapper")
         st.divider()
 
@@ -2143,13 +2143,9 @@ st.markdown(
     .title-container {
         position: relative;
         text-align: center;
-        margin: 60px 0 40px;
-        height: 180px;
-        perspective: 1000px;
-        overflow: hidden;
+        margin: 50px 0 30px;
     }
 
-    /* Disable all clicks, pointers, and selection on the entire title area */
     .title-container,
     .title-container h1,
     .title-container h1 * {
@@ -2159,30 +2155,39 @@ st.markdown(
     }
 
     .FLEXIfold-title {
-        font-family: 'Arial Black', 'Helvetica Neue', sans-serif;
-        font-size: 5.6rem;           /* Slightly larger since no "3D" */
-        font-weight: 900;
-        background: linear-gradient(90deg, #00C9FF, #A78BFA, #2DD4BF);
-        -webkit-background-clip: text;
-        background-clip: text;
-        color: transparent;
-        text-shadow: 0 0 20px rgba(0, 201, 255, 0.6);
-        animation: softGlow 5s ease-in-out infinite;
-        display: inline-block;
-        letter-spacing: -2px;
+        font-family: 'Inter', 'Helvetica Neue', sans-serif;
+        font-size: 4.5rem;
+        font-weight: 800;
+        color: #1E293B; /* Deep Slate for high contrast */
+        letter-spacing: -1.5px;
+        margin-bottom: 0;
     }
 
-    @keyframes softGlow {
-        0%, 100%   { opacity: 0.92; filter: brightness(1.05); }
-        50%        { opacity: 1.00; filter: brightness(1.45); }
+    /* Adds a crisp scientific blue accent to the 'fold' part */
+    .FLEXIfold-accent {
+        color: #0EA5E9; 
+    }
+
+    .FLEXIfold-subtitle {
+        text-align: center; 
+        color: #64748B; /* Professional muted slate */
+        font-size: 1.25rem; 
+        margin-top: 5px; 
+        font-weight: 400;
+    }
+    
+    /* Dark mode support for Streamlit */
+    @media (prefers-color-scheme: dark) {
+        .FLEXIfold-title { color: #F8FAFC; }
+        .FLEXIfold-subtitle { color: #94A3B8; }
     }
     </style>
 
     <div class="title-container">
         <h1>
-            <span class="FLEXIfold-title">FLEXIfold</span>
+            <span class="FLEXIfold-title">FLEXI<span class="FLEXIfold-accent">fold</span></span>
         </h1>
-        <p style="text-align:center; color:#B3E5FC; font-size:1.25rem; margin-top:9px; font-weight:300;">
+        <p class="FLEXIfold-subtitle">
             Bridging Quantitative Proteomics with 3D Protein Structures
         </p>
     </div>
@@ -2206,7 +2211,7 @@ with main_tab[0]:
     # ----- description (always visible) -----
     st.markdown(
         """
-        <p style='text-align:center; font-size:16px; color:#87CEbB;'>
+        <p style='text-align:center; font-size:16px; color:var(--text-color); opacity:0.8;'>
         The Qualitative Analysis tab allows users to visualize peptide intensity data on 3D protein structures, 
         focusing on the presence and locations of post-translational modifications (PTMs). 
         Users can upload peptide CSV and FASTA files, select proteins of interest, and customize PTM annotations. 
