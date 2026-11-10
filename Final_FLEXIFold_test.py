@@ -2220,7 +2220,7 @@ with main_tab[0]:
     st.session_state.qual_sub_tab = "Single Condition"
     st.subheader("Single Condition")
     st.markdown(
-        """ <p style='text-align:center; font-size:18px; color:#B3E5FC;'>
+        """<p style='text-align:center; font-size:16px; color:var(--text-color); opacity:0.8;'>
         Visualize peptide intensities and PTMs on interactive 3D protein structures and linear sequence views.
         </p> 
         """,
@@ -2400,7 +2400,7 @@ with main_tab[1]:
     # ----- description (always visible) -----
     st.markdown(
         """
-        <p style='text-align:center; font-size:16px; color:#87CEbB;'>
+        <p style='text-align:center; font-size:16px; color:var(--text-color); opacity:0.8;'>
         The Quantitative Analysis tab enables users to compare peptide intensity data between two conditions 
         (e.g., control vs. disease) on 3D protein structures. Users can upload peptide CSV and FASTA files, 
         define experimental conditions, and apply tryptic cleavage rules. The tool visualizes intensity 
@@ -2422,7 +2422,7 @@ with main_tab[1]:
         st.subheader("Single Condition Quantitative Analysis")
        # st.markdown(
            # """
-           # <p style='text-align:center; font-size:18px; color:#32CD32;'>
+           # <p style='text-align:center; font-size:16px; color:var(--text-color); opacity:0.8;'>
            # Available Now! The Single Condition Quantitative Analysis allows you to analyze peptide intensities 
            # and visualize them on 3D structures. Upload your data and explore the features.
            # </p>
@@ -2668,7 +2668,7 @@ with main_tab[1]:
             st.subheader("Multiple Conditions Quantitative Analysis")
             #st.markdown(
             # """
-            # <p style='text-align:center; font-size:18px; color:#32CD32;'>
+            #<p style='text-align:center; font-size:16px; color:var(--text-color); opacity:0.8;'>
             # Available Now! The Multiple Conditions Quantitative Analysis is ready with exciting features 
             # to compare peptide intensity data on 3D protein structures.
             # </p>
