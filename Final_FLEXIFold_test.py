@@ -29,6 +29,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 import plotly.graph_objects as go
 import ngl_sync_viewer as ngl_sync
+import matplotlib.colors as mcolors
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
