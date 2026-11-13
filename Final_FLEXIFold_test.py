@@ -86,7 +86,7 @@ def render_sidebar():
             help="Map peptides using tryptic cleavage rules.",
         )
         st.session_state.proteotypic_only = st.checkbox(
-            "Proteotypic Peptides Only",
+            "Unique(Proteotypic) Peptides Only",
             value=st.session_state.proteotypic_only,
             help="Filter for peptides that match expected proteotypic behavior.",
         )
@@ -585,6 +585,12 @@ def clean_and_find_mods(mod_seq: str):
 
     return cleaned_seq, mods
 def map_peptides_to_residues(df, protein_seq, intensity_col, overlap_strategy='merge', ptm_col=None, apply_tryptic=False,proteotypic_only=False, pre_computed_z_scores=None):
+    if proteotypic_only:
+        # Keep only peptides that appear in exactly 1 unique Protein.Group in the dataframe
+        unique_pep_counts = df.groupby('Stripped.Sequence')['Protein.Group'].nunique()
+        unique_peptides = unique_pep_counts[unique_pep_counts == 1].index
+        df = df[df['Stripped.Sequence'].isin(unique_peptides)]
+        
     seq_len = len(protein_seq)
     residue_vals = [None] * seq_len
     ptm_positions = {}  # ← This will collect ALL PTMs, even from zero-intensity peptides
@@ -670,10 +676,19 @@ def map_peptides_to_residues(df, protein_seq, intensity_col, overlap_strategy='m
         valid_found = False
         for match in matches:
             start = match.start()
-            if apply_tryptic and start > 0 and protein_seq[start - 1] not in 'KR':
-                continue
-            valid_found = True
             end = start + len(pep)
+            
+            if apply_tryptic:
+                # N-terminus is valid if it's the start of the protein, OR preceded by K/R (and not followed by P)
+                valid_n = (start == 0) or (protein_seq[start - 1] in 'KR' and protein_seq[start] != 'P')
+                
+                # C-terminus is valid if it's the end of the protein, OR ends in K/R (and next AA is not P)
+                valid_c = (end == len(protein_seq)) or (protein_seq[end - 1] in 'KR' and protein_seq[end] != 'P')
+                
+                if not (valid_n and valid_c):
+                    continue
+                    
+            valid_found = True
 
             peptide_match = peptides[peptides['Stripped.Sequence'] == pep]
             if peptide_match.empty:
@@ -2285,7 +2300,7 @@ with main_tab[0]:
         combine_isoforms = st.session_state.combine_isoforms
         overlap_strategy = st.session_state.overlap_strategy
 
-        # Force Z-score style (beautiful!)
+        # Force Z-score style 
         st.session_state.is_frequency = False
 
         if st.button("Process Protein", key="process_protein_1", use_container_width=True):
@@ -2382,7 +2397,7 @@ with main_tab[0]:
                 st.subheader("Linear Sequence Visualization")
                 render_linear_plot(
                     residue_vals=residue_vals,
-                    title=intensity_col,                    # ← THIS IS THE CONDITION NAME!
+                    title=intensity_col,                   
                     seq_len=seq_len,
                     vmin=-3,
                     vmax=3,
@@ -2390,7 +2405,7 @@ with main_tab[0]:
                     model_name=intensity_col,
                     plddt_list=plddt_list,
                     mean_plddt=mean_plddt,
-                    cmap_name=st.session_state.cmap,                      # For intensity
+                    cmap_name=st.session_state.cmap,                     
                     not_mapped_color=st.session_state.not_mapped_color,
                     ptm_data=final_ptm
                 )
