@@ -2304,6 +2304,8 @@ with main_tab[0]:
         st.session_state.is_frequency = False
 
         if st.button("Process Protein", key="process_protein_1", use_container_width=True):
+            st.session_state.qual_processed = True
+        if st.session_state.get("qual_processed", False): 
             with st.spinner("Processing protein..."):
                 base_id = selected_protein.split("-")[0]
                 protein_seq = next((str(r.seq) for r in records if base_id in r.id), str(records[0].seq))
@@ -2370,6 +2372,110 @@ with main_tab[0]:
                     )
                 # === 3D Viewer ===
                 st.subheader("3D Structure Visualization")
+                # ==========================================
+                # PEPTIDE VIEW MODE SELECTION
+                # ==========================================
+                st.markdown("#### Peptide View Mode")
+                if "single_view_mode" not in st.session_state:
+                    st.session_state.single_view_mode = "Full Structure (All Peptides)"
+                if "single_selected_peptide" not in st.session_state:
+                    st.session_state.single_selected_peptide = None
+
+                view_mode = st.radio(
+                    "Choose visualization mode:",
+                    options=["Full Structure (All Peptides)", "View by Stripped Sequence", "View by Modified Sequence"],
+                    index=["Full Structure (All Peptides)", "View by Stripped Sequence", "View by Modified Sequence"].index(st.session_state.single_view_mode),
+                    key=f"single_view_mode_radio_{intensity_col}", # unique key per tab
+                    horizontal=True
+                )
+
+                if view_mode != st.session_state.single_view_mode:
+                    st.session_state.single_view_mode = view_mode
+                    st.session_state.single_selected_peptide = None
+                    st.rerun()
+
+                # Extract positions
+                def get_positions(peptide_list):
+                    result = {}
+                    for pep in peptide_list:
+                        pep_str = str(pep).strip()
+                        if pep_str:
+                            pos = find_peptide_position(protein_seq, pep_str)
+                            result[pep_str] = (pos, f"{pep_str} (pos: {pos})")
+                    return result
+
+                stripped_unique = selected_df["Stripped.Sequence"].dropna().astype(str).unique().tolist()
+                
+                if st.session_state.ptm_enabled and "Modified.Sequence" in selected_df.columns:
+                    mod_mask = selected_df["Modified.Sequence"].astype(str).str.contains(r"UniMod:\d+", case=False, na=False)
+                    modified_unique = selected_df.loc[mod_mask, "Modified.Sequence"].dropna().astype(str).unique().tolist()
+                else:
+                    modified_unique = stripped_unique
+
+                stripped_positions = get_positions(stripped_unique)
+                modified_positions = get_positions(modified_unique)
+
+                def sort_labels(pos_dict):
+                    return [label for _, (_, label) in sorted(pos_dict.items(), key=lambda x: x[1][0] if x[1][0] != -1 else 999999)]
+
+                selected_peptide = None
+                
+                # Render dropdown based on mode
+                if view_mode == "View by Stripped Sequence":
+                    opts = sort_labels(stripped_positions)
+                    if not opts: 
+                        st.warning("No stripped peptides found.")
+                    else:
+                        sel = st.selectbox("Select peptide:", opts, key=f"single_strip_sel_{intensity_col}")
+                        selected_peptide = sel.split(" (pos:")[0].strip()
+                        st.info(f"Showing peptide: **{sel}**")
+                        
+                elif view_mode == "View by Modified Sequence":
+                    opts = sort_labels(modified_positions)
+                    if not opts: 
+                        st.warning("No modified peptides found.")
+                    else:
+                        sel = st.selectbox("Select peptide:", opts, key=f"single_mod_sel_{intensity_col}")
+                        selected_peptide = sel.split(" (pos:")[0].strip()
+                        st.info(f"Showing modified peptide: **{sel}**")
+
+                # Filter data if a specific peptide is chosen
+                if view_mode != "Full Structure (All Peptides)" and selected_peptide:
+                    filter_col = "Modified.Sequence" if view_mode == "View by Modified Sequence" else "Stripped.Sequence"
+                    
+                    # Clean columns for robust matching
+                    clean_col = f"{filter_col}_clean"
+                    selected_df[clean_col] = selected_df[filter_col].astype(str).str.strip()
+                    peptide_rows = selected_df[selected_df[clean_col] == selected_peptide]
+                    
+                    # Remap using only this specific peptide
+                    ptm_col_to_use = 'Modified.Sequence' if st.session_state.ptm_enabled else None
+                    
+                    # If quantitative tab, pass the pre-computed z-scores to maintain scale
+                    z_scores_to_pass = None
+                    if "z_score_mapping" in st.session_state and intensity_col in st.session_state.z_score_mapping:
+                        z_scores_to_pass = np.array([st.session_state.z_score_mapping[intensity_col].get(pep, 0.0) for pep in peptide_rows['Stripped.Sequence']])
+                    
+                    residue_vals, ptm_dict = map_peptides_to_residues(
+                        peptide_rows, protein_seq, intensity_col,
+                        overlap_strategy=overlap_strategy,
+                        ptm_col=ptm_col_to_use,
+                        apply_tryptic=st.session_state.apply_tryptic,
+                        pre_computed_z_scores=z_scores_to_pass
+                    )
+                    
+                    # Rebuild final_ptm for this specific peptide
+                    final_ptm = {}
+                    if st.session_state.ptm_enabled and ptm_dict:
+                        for um in [u for u in st.session_state.get("selected_unimods", []) if u in ptm_dict]:
+                            cfg = st.session_state.ptm_configs.get(um, {})
+                            final_ptm[um] = {
+                                "positions": ptm_dict[um],
+                                "color": cfg.get("color", "#FF0000"),
+                                "label": cfg.get("label", um),
+                                "selected": cfg.get("selected", True),
+                            }
+                # ==========================================
                 if st.session_state.engine.startswith("NGL"):
                     ngl_sync.render_ngl_synced_viewer(
                         pdb_str=pdb_str, protein_seq=protein_seq,
@@ -2586,8 +2692,111 @@ with main_tab[1]:
                     "mean_plddt": mean_plddt,
                     "processed": True
                 }
-                    # === 3D Viewer ===
+                # === 3D Viewer ===
                 st.subheader("3D Structure Visualization")
+                # ==========================================
+                # PEPTIDE VIEW MODE SELECTION
+                # ==========================================
+                st.markdown("#### Peptide View Mode")
+                if "single_view_mode" not in st.session_state:
+                    st.session_state.single_view_mode = "Full Structure (All Peptides)"
+                if "single_selected_peptide" not in st.session_state:
+                    st.session_state.single_selected_peptide = None
+
+                view_mode = st.radio(
+                    "Choose visualization mode:",
+                    options=["Full Structure (All Peptides)", "View by Stripped Sequence", "View by Modified Sequence"],
+                    index=["Full Structure (All Peptides)", "View by Stripped Sequence", "View by Modified Sequence"].index(st.session_state.single_view_mode),
+                    key=f"single_view_mode_radio_{intensity_col}", # unique key per tab
+                    horizontal=True
+                )
+
+                if view_mode != st.session_state.single_view_mode:
+                    st.session_state.single_view_mode = view_mode
+                    st.session_state.single_selected_peptide = None
+                    st.rerun()
+
+                # Extract positions
+                def get_positions(peptide_list):
+                    result = {}
+                    for pep in peptide_list:
+                        pep_str = str(pep).strip()
+                        if pep_str:
+                            pos = find_peptide_position(protein_seq, pep_str)
+                            result[pep_str] = (pos, f"{pep_str} (pos: {pos})")
+                    return result
+
+                stripped_unique = selected_df["Stripped.Sequence"].dropna().astype(str).unique().tolist()
+                
+                if st.session_state.ptm_enabled and "Modified.Sequence" in selected_df.columns:
+                    mod_mask = selected_df["Modified.Sequence"].astype(str).str.contains(r"UniMod:\d+", case=False, na=False)
+                    modified_unique = selected_df.loc[mod_mask, "Modified.Sequence"].dropna().astype(str).unique().tolist()
+                else:
+                    modified_unique = stripped_unique
+
+                stripped_positions = get_positions(stripped_unique)
+                modified_positions = get_positions(modified_unique)
+
+                def sort_labels(pos_dict):
+                    return [label for _, (_, label) in sorted(pos_dict.items(), key=lambda x: x[1][0] if x[1][0] != -1 else 999999)]
+
+                selected_peptide = None
+                
+                # Render dropdown based on mode
+                if view_mode == "View by Stripped Sequence":
+                    opts = sort_labels(stripped_positions)
+                    if not opts: 
+                        st.warning("No stripped peptides found.")
+                    else:
+                        sel = st.selectbox("Select peptide:", opts, key=f"single_strip_sel_{intensity_col}")
+                        selected_peptide = sel.split(" (pos:")[0].strip()
+                        st.info(f"Showing peptide: **{sel}**")
+                        
+                elif view_mode == "View by Modified Sequence":
+                    opts = sort_labels(modified_positions)
+                    if not opts: 
+                        st.warning("No modified peptides found.")
+                    else:
+                        sel = st.selectbox("Select peptide:", opts, key=f"single_mod_sel_{intensity_col}")
+                        selected_peptide = sel.split(" (pos:")[0].strip()
+                        st.info(f"Showing modified peptide: **{sel}**")
+
+                # Filter data if a specific peptide is chosen
+                if view_mode != "Full Structure (All Peptides)" and selected_peptide:
+                    filter_col = "Modified.Sequence" if view_mode == "View by Modified Sequence" else "Stripped.Sequence"
+                    
+                    # Clean columns for robust matching
+                    clean_col = f"{filter_col}_clean"
+                    selected_df[clean_col] = selected_df[filter_col].astype(str).str.strip()
+                    peptide_rows = selected_df[selected_df[clean_col] == selected_peptide]
+                    
+                    # Remap using only this specific peptide
+                    ptm_col_to_use = 'Modified.Sequence' if st.session_state.ptm_enabled else None
+                    
+                    # If quantitative tab, pass the pre-computed z-scores to maintain scale
+                    z_scores_to_pass = None
+                    if "z_score_mapping" in st.session_state and intensity_col in st.session_state.z_score_mapping:
+                        z_scores_to_pass = np.array([st.session_state.z_score_mapping[intensity_col].get(pep, 0.0) for pep in peptide_rows['Stripped.Sequence']])
+                    
+                    residue_vals, ptm_dict = map_peptides_to_residues(
+                        peptide_rows, protein_seq, intensity_col,
+                        overlap_strategy=overlap_strategy,
+                        ptm_col=ptm_col_to_use,
+                        apply_tryptic=st.session_state.apply_tryptic,
+                        pre_computed_z_scores=z_scores_to_pass
+                    )
+                    
+                    # Rebuild final_ptm for this specific peptide
+                    final_ptm = {}
+                    if st.session_state.ptm_enabled and ptm_dict:
+                        for um in [u for u in st.session_state.get("selected_unimods", []) if u in ptm_dict]:
+                            cfg = st.session_state.ptm_configs.get(um, {})
+                            final_ptm[um] = {
+                                "positions": ptm_dict[um],
+                                "color": cfg.get("color", "#FF0000"),
+                                "label": cfg.get("label", um),
+                                "selected": cfg.get("selected", True),
+                            }
                 if st.session_state.engine.startswith("NGL"):
                     ngl_sync.render_ngl_synced_viewer(
                         pdb_str=pdb_str, protein_seq=protein_seq,
